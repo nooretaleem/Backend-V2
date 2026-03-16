@@ -15,7 +15,8 @@ const corsOptions = {
     'http://localhost:4200',
     'http://localhost:5000',
     'https://zeeshanpetrolium.vercel.app',
-    'https://www.zeeshanpetrolium.vercel.app'
+    'https://www.zeeshanpetrolium.vercel.app',
+    'https://zeeshanpetroerp.vercel.app/'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],

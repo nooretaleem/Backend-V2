@@ -41,7 +41,7 @@ exports.getRoles = async (req, res) => {
 };
 
 exports.getModules = async (req, res) => {
-   
+
     try {
         const [rows] = await db.execute('SELECT id,name from modules');
 
@@ -58,20 +58,20 @@ exports.getModules = async (req, res) => {
     }
 };
 exports.getModulesforRole = async (req, res) => {
-   
-    const id=req.query.id;
-    
+
+    const id = req.query.id;
+
     try {
         const [rows] = await db.execute('SELECT modules.id,modules.name from modulesassignment'
-        + ' inner join modules on modules.id=modulesassignment.moduleid'
-        + ' inner join roles on roles.id=modulesassignment.roleid where modulesassignment.roleid=?',[id]);
+            + ' inner join modules on modules.id=modulesassignment.moduleid'
+            + ' inner join roles on roles.id=modulesassignment.roleid where modulesassignment.roleid=?', [id]);
 
         const roles = rows.map(row => ({
             id: row.id,
             name: row.name,
 
         }));
-        
+
         res.status(200).json(roles);
 
     } catch (err) {
@@ -278,70 +278,58 @@ exports.deleteRole = async (req, res) => {
 };
 
 exports.addRoleModules = async (req, res) => {
+    const roleid = Number(req.body.roleid);
+    const modules = Array.isArray(req.body.modules) ? req.body.modules : [];
 
-    const roleid = req.body.roleid;
-    const modules = req.body.modules;
-    
-    
-       
+    if (!roleid) {
+        return res.status(400).json({ message: 'roleid is required.' });
+    }
+
+    const selectedModuleIds = [...new Set(
+        modules
+            .map(module => Number(module?.id ?? module))
+            .filter(moduleId => Number.isInteger(moduleId) && moduleId > 0)
+    )];
+
+    let connection;
     try {
-        const [rows] = await db.execute('SELECT roleid FROM modulesassignment WHERE roleid = ?', [
-            roleid,
-        ]);
-        if (rows.length != 0) {
+        connection = await db.getConnection();
+        await connection.beginTransaction();
 
-            console.log("Role already exists. So we need to delete it first.");
-            const [result] = await db.execute('Delete FROM modulesassignment WHERE roleid = ?', [roleid]);
-            
-            insertModulesIntoDatabase(roleid, modules)
-            
-                .then(() => {
-                    // The inserts are completed.
-                    res.status(200).json({ message: 'Modules added to the role.' });
-                })
-                .catch((error) => {
-                    console.error(err);
-                    // Handle any errors here
-                    res.status(500).json({ message: 'Error occurred while adding module to role.' });
-                });
+        const [existingRows] = await connection.execute(
+            'SELECT moduleid FROM modulesassignment WHERE roleid = ?',
+            [roleid]
+        );
 
-            
-        }
-        else {
-            insertModulesIntoDatabase(roleid, modules)
-            .then(() => {
-                // The inserts are completed.
-                res.status(200).json({ message: 'Modules added to the role.' });
-            })
-            .catch((error) => {
-                // Handle any errors here
-                console.error(error);
-                res.status(500).json({ message: 'Error occurred while adding module to role.' });
-            });
-            
+        const existingModuleIds = existingRows.map(row => Number(row.moduleid));
+        const modulesToInsert = selectedModuleIds.filter(moduleId => !existingModuleIds.includes(moduleId));
+        const modulesToDelete = existingModuleIds.filter(moduleId => !selectedModuleIds.includes(moduleId));
+
+        for (const moduleId of modulesToInsert) {
+            await connection.execute(
+                'INSERT INTO modulesassignment (roleid, moduleid) VALUES (?, ?)',
+                [roleid, moduleId]
+            );
         }
 
+        for (const moduleId of modulesToDelete) {
+            await connection.execute(
+                'DELETE FROM modulesassignment WHERE roleid = ? AND moduleid = ?',
+                [roleid, moduleId]
+            );
+        }
+
+        await connection.commit();
+        res.status(200).json({ message: 'Modules updated for the role.' });
     } catch (err) {
-        console.error("Error: "+err);
+        if (connection) {
+            await connection.rollback();
+        }
+        console.error('Error updating role modules:', err);
         res.status(500).json({ message: 'Server Error' });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 }
-async function insertModulesIntoDatabase(roleid, modules) {
-    
-    try {
-        // Convert the modules object into an array of objects
-        const moduleArray = Object.values(modules);
-        
-        for (const module of moduleArray) {
-          const { id } = module; // Extract the 'id' property from each module object
-          const [result] = await db.execute(
-            'INSERT INTO modulesassignment (roleid, moduleid) VALUES (?, ?)',
-            [roleid, id]
-          );
-          //console.log(`Inserted module ${id} for role ${roleid}`);
-        }
-      } catch (error) {
-        console.error('Error inserting modules:', error);
-      } 
-   
-  }
