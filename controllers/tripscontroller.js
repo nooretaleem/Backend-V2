@@ -12,10 +12,10 @@ async function checkAndCloseTrip(connection, tripId) {
              WHERE trip_id = ? AND Active = 1`,
             [tripId]
         );
-        
+
         const totalCount = parseInt(tripDeposCheck[0]?.total_count || 0);
         const paidCount = parseInt(tripDeposCheck[0]?.paid_count || 0);
-        
+
         // Check if all fuel is sold (sum of quantity_ltr from trip_products equals sum of fuel from pol_sale)
         const [fuelCheck] = await connection.execute(
             `SELECT 
@@ -24,10 +24,10 @@ async function checkAndCloseTrip(connection, tripId) {
             `,
             [tripId, tripId]
         );
-        
+
         const totalFuel = parseFloat(fuelCheck[0]?.total_fuel || 0);
         const soldFuel = parseFloat(fuelCheck[0]?.sold_fuel || 0);
-        
+
         // If all payments/recoveries are cleared and all fuel is sold, update status to 'Completed'
         // Also allow completing if there's no fuel to sell (totalFuel = 0) and all payments are cleared
         if (totalCount > 0 && paidCount === totalCount && (totalFuel === 0 || (totalFuel > 0 && soldFuel >= totalFuel))) {
@@ -58,14 +58,14 @@ async function recalculateAllBalances(connection) {
             WHERE Active = 1
             ORDER BY id ASC
         `);
-        
+
         let runningBalance = 0;
-        
+
         // Update each record with its running balance
         // Credit adds to balance, Debit subtracts from balance
         for (const record of allRecords) {
             runningBalance += (record.credit || 0) - (record.debit || 0);
-            
+
             await connection.execute(`
                 UPDATE cash_in_hand
                 SET balance = ?
@@ -102,16 +102,16 @@ async function recalculateAdvanceBalances(connection, depoId) {
         for (const row of advanceRows) {
             const debit = parseFloat(row.Debit) || 0;
             const credit = parseFloat(row.Credit) || 0;
-            
+
             // Calculate new balance: previous balance - debit + credit
             runningBalance = runningBalance - debit + credit;
-            
+
             // Update this row's Balance
             await connection.execute(
                 `UPDATE advance_balance SET Balance = ? WHERE ID = ?`,
                 [runningBalance, row.ID]
             );
-            
+
             console.log(`Recalculated advance_balance row ${row.ID}: New Balance=${runningBalance} (Debit=${debit}, Credit=${credit})`);
         }
 
@@ -156,7 +156,7 @@ async function recalculatePoolBalancesFromRow(connection, depoId, startFromRowId
             if (previousRow.length > 0) {
                 currentBalance = parseFloat(previousRow[0].DepoLimit || 0);
             }
-            
+
             // Get all rows from startFromRowId onwards (active = 1)
             [poolRows] = await connection.execute(
                 `SELECT ID, Debit, Credit, DepoLimit 
@@ -181,16 +181,16 @@ async function recalculatePoolBalancesFromRow(connection, depoId, startFromRowId
         for (const row of poolRows) {
             const debit = parseFloat(row.Debit) || 0;
             const credit = parseFloat(row.Credit) || 0;
-            
+
             // Calculate new balance: previous balance - debit + credit
             currentBalance = currentBalance - debit + credit;
-            
+
             // Update this row's DepoLimit
             await connection.execute(
                 `UPDATE pool SET DepoLimit = ? WHERE ID = ?`,
                 [currentBalance, row.ID]
             );
-            
+
             console.log(`Recalculated pool row ${row.ID}: New DepoLimit=${currentBalance} (Debit=${debit}, Credit=${credit})`);
         }
 
@@ -294,8 +294,8 @@ ORDER BY t.start_date DESC, t.id DESC `;
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
+            res.status(500).json({
+                message: 'Server Error',
                 error: err.message,
                 sqlMessage: err.sqlMessage,
                 code: err.code
@@ -308,7 +308,7 @@ ORDER BY t.start_date DESC, t.id DESC `;
 exports.getFilteredPolSales = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly', or undefined for all
-        
+
         // Build date range condition if filter is provided
         let dateCondition = '';
         if (filter) {
@@ -316,7 +316,7 @@ exports.getFilteredPolSales = async (req, res) => {
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             let dateStart = null;
             let dateEnd = null;
-            
+
             switch (filter) {
                 case 'daily':
                     dateStart = today;
@@ -341,7 +341,7 @@ exports.getFilteredPolSales = async (req, res) => {
                     dateEnd = new Date(now.getFullYear() + 1, 0, 1);
                     break;
             }
-            
+
             if (dateStart && dateEnd) {
                 const formatDateTime = (date) => {
                     const year = date.getFullYear();
@@ -349,13 +349,13 @@ exports.getFilteredPolSales = async (req, res) => {
                     const day = String(date.getDate()).padStart(2, '0');
                     return `${year}-${month}-${day} 00:00:00`;
                 };
-                
+
                 const startStr = formatDateTime(dateStart);
                 const endStr = formatDateTime(dateEnd);
                 dateCondition = `AND ps.CD >= '${startStr}' AND ps.CD < '${endStr}'`;
             }
         }
-        
+
         const query = `
             SELECT 
                 ps.id,
@@ -381,7 +381,7 @@ exports.getFilteredPolSales = async (req, res) => {
             ${dateCondition}
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query);
         res.json(rows);
     } catch (err) {
@@ -389,9 +389,9 @@ exports.getFilteredPolSales = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }
@@ -424,7 +424,7 @@ exports.getTodayPolSales = async (req, res) => {
             WHERE ps.Active = 1
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query);
         res.json(rows);
     } catch (err) {
@@ -432,9 +432,9 @@ exports.getTodayPolSales = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }
@@ -493,11 +493,11 @@ exports.getTrip = async (req, res) => {
             WHERE t.id = ? AND t.active = 1
         `;
         const [rows] = await db.execute(query, [id]);
-        
+
         if (rows.length === 0) {
             return res.status(404).json({ message: 'Trip not found' });
         }
-        
+
         res.json(rows[0]);
     } catch (err) {
         console.error('Error fetching trip:', err);
@@ -509,7 +509,7 @@ exports.getTrip = async (req, res) => {
 exports.addTrip = async (req, res) => {
     try {
         console.log('Received trip data:', req.body);
-        
+
         const {
             trip_no,
             start_date,
@@ -519,7 +519,7 @@ exports.addTrip = async (req, res) => {
             cpl, // May be null (products stored in trip_products)
             products, // Array of products
             spl,
-            amount_collected, 
+            amount_collected,
             paid,
             payment_method,
             account_head,
@@ -539,39 +539,39 @@ exports.addTrip = async (req, res) => {
             });
             return res.status(400).json({ message: 'Start date and vehicle are required' });
         }
-        
+
         // Validate products array
         if (!products || !Array.isArray(products) || products.length === 0) {
             return res.status(400).json({ message: 'At least one product is required' });
         }
-        
+
         // Validate each product
         for (let i = 0; i < products.length; i++) {
             const product = products[i];
             if (!product.depo_id || !product.product_type || !product.quantity_ltr || product.invoice_rate === undefined || product.invoice_rate === null) {
-                return res.status(400).json({ 
-                    message: `Product ${i + 1} is missing required fields (depo_id, product_type, quantity_ltr, or invoice_rate)` 
+                return res.status(400).json({
+                    message: `Product ${i + 1} is missing required fields (depo_id, product_type, quantity_ltr, or invoice_rate)`
                 });
             }
-            
+
             // Validate purchase_type
             if (!product.purchase_type || !['cash', 'advance', 'credit'].includes(product.purchase_type)) {
-                return res.status(400).json({ 
-                    message: `Product ${i + 1} must have a valid purchase_type (cash, advance, or credit)` 
+                return res.status(400).json({
+                    message: `Product ${i + 1} must have a valid purchase_type (cash, advance, or credit)`
                 });
             }
-            
+
             // Validate Mobile/Lube Oil specific fields
             if (product.product_type === 'Mobile/Lube Oil') {
                 if (!product.container_type) {
-                    return res.status(400).json({ 
-                        message: `Product ${i + 1}: Container Type is required for Mobile/Lube Oil` 
+                    return res.status(400).json({
+                        message: `Product ${i + 1}: Container Type is required for Mobile/Lube Oil`
                     });
                 }
                 if (product.container_type === 'Cotton') {
                     if (!product.container_liters || !product.no_of_containers) {
-                        return res.status(400).json({ 
-                            message: `Product ${i + 1}: Container Size and No. of Containers are required for Cotton` 
+                        return res.status(400).json({
+                            message: `Product ${i + 1}: Container Size and No. of Containers are required for Cotton`
                         });
                     }
                 }
@@ -580,30 +580,30 @@ exports.addTrip = async (req, res) => {
 
         // Validate payment fields per product (account_head is now per product, not at trip level)
         const hasCashOrAdvanceProducts = products && products.some(p => p.purchase_type === 'cash' || p.purchase_type === 'advance');
-       
+
         for (let i = 0; i < products.length; i++) {
             const product = products[i];
             if (product.purchase_type === 'cash' || product.purchase_type === 'advance') {
-                product.account_head='Advance Balance';
+                product.account_head = 'Advance Balance';
                 if (!product.account_head) {
-                    return res.status(400).json({ 
-                        message: `Product ${i + 1}: Account Head is required for Full Payment or Partial Payment purchase types` 
+                    return res.status(400).json({
+                        message: `Product ${i + 1}: Account Head is required for Full Payment or Partial Payment purchase types`
                     });
                 }
                 if (product.account_head === 'bank') {
                     if (!product.bank_id) {
-                        return res.status(400).json({ 
-                            message: `Product ${i + 1}: Bank is required when Account Head is Bank` 
+                        return res.status(400).json({
+                            message: `Product ${i + 1}: Bank is required when Account Head is Bank`
                         });
                     }
                     if (!product.account_id) {
-                        return res.status(400).json({ 
-                            message: `Product ${i + 1}: Account is required when Account Head is Bank` 
+                        return res.status(400).json({
+                            message: `Product ${i + 1}: Account is required when Account Head is Bank`
                         });
                     }
                     if (!product.payment_mode) {
-                        return res.status(400).json({ 
-                            message: `Product ${i + 1}: Payment Mode is required when Account Head is Bank` 
+                        return res.status(400).json({
+                            message: `Product ${i + 1}: Payment Mode is required when Account Head is Bank`
                         });
                     }
                 }
@@ -614,7 +614,7 @@ exports.addTrip = async (req, res) => {
         const connection = await db.getConnection();
         try {
             await connection.beginTransaction();
-            
+
             // Get CB (Created By) once for the entire function
             const CB = req.body.CB || 'Admin'; // Created By (user ID or username), default to 'System' if not provided
 
@@ -624,7 +624,7 @@ exports.addTrip = async (req, res) => {
             let depoCosts = {}; // { depo_id: total_cost for credit products }
             let depoBalances = {}; // { depo_id: balance }
             let depoNames = {}; // { depo_id: name }
-            
+
             if (products && products.length > 0) {
                 // Calculate total cost per depo for credit products only (using invoice_rate - discount)
                 products.forEach(product => {
@@ -641,7 +641,7 @@ exports.addTrip = async (req, res) => {
                         depoCosts[depoId] += cost;
                     }
                 });
-                
+
                 // Check balance for each depo with credit products
                 for (const depoId of Object.keys(depoCosts)) {
                     const [depoRows] = await connection.execute(
@@ -663,8 +663,8 @@ exports.addTrip = async (req, res) => {
                     if (depoRows.length === 0) {
                         await connection.rollback();
                         connection.release();
-                        return res.status(400).json({ 
-                            message: `Depo with ID ${depoId} not found or inactive.` 
+                        return res.status(400).json({
+                            message: `Depo with ID ${depoId} not found or inactive.`
                         });
                     }
 
@@ -684,10 +684,10 @@ exports.addTrip = async (req, res) => {
                     if (totalCost > totalAvailable) {
                         await connection.rollback();
                         connection.release();
-                        return res.status(400).json({ 
+                        return res.status(400).json({
                             message: `Total cost (Rs. ${totalCost.toFixed(2)}) for credit products exceeds available funds (Rs. ${totalAvailable.toFixed(2)}) for depo "${depoName}". ` +
-                                     `Available: Advance (Rs. ${advanceBalance.toFixed(2)}) + Credit (Rs. ${depoBalance.toFixed(2)}). ` +
-                                     `Please reduce quantities or increase the depo balance.` 
+                                `Available: Advance (Rs. ${advanceBalance.toFixed(2)}) + Credit (Rs. ${depoBalance.toFixed(2)}). ` +
+                                `Please reduce quantities or increase the depo balance.`
                         });
                     }
                 }
@@ -709,7 +709,7 @@ exports.addTrip = async (req, res) => {
                         const discount = parseFloat(product.discount) || 0;
                         const rateAfterDiscount = invoiceRate - discount;
                         const productAmount = (parseFloat(product.quantity_ltr) || 0) * rateAfterDiscount;
-                        
+
                         if (purchaseType === 'cash') {
                             // Full payment: paid_amount = total amount
                             totalPaidAmount += productAmount;
@@ -721,14 +721,14 @@ exports.addTrip = async (req, res) => {
                     }
                 });
             }
-            
+
             // Arrays to store transaction IDs and cash_in_hand IDs (declared outside if block for accessibility)
             const transactionIDsForTrip = []; // Array to store all transaction IDs created
             const cashInHandIdsForTransaction = []; // Array to store cash_in_hand IDs
             // Track advance_balance table entry IDs that need to be linked to the newly created TripID
             // (key: depoId, value: advance_balance.ID)
             let advanceBalanceEntryIds = {};
-            
+
             // Handle payment transactions per product (account_head is now per product)
             // Process payments for each product with cash or advance purchase type
             if (hasCashOrAdvanceProducts && totalPaidAmount > 0) {
@@ -743,7 +743,7 @@ exports.addTrip = async (req, res) => {
                         productsByAccountHead[accountHead].push({ product, index });
                     }
                 });
-                
+
                 // Process payments grouped by account_head
                 for (const [accountHead, productGroup] of Object.entries(productsByAccountHead)) {
                     // Calculate total amount for this account head group
@@ -753,21 +753,21 @@ exports.addTrip = async (req, res) => {
                         const discount = parseFloat(product.discount) || 0;
                         const rateAfterDiscount = invoiceRate - discount;
                         const productAmount = (parseFloat(product.quantity_ltr) || 0) * rateAfterDiscount;
-                        
+
                         if (product.purchase_type === 'cash') {
                             groupTotal += productAmount;
                         } else if (product.purchase_type === 'advance') {
                             groupTotal += parseFloat(product.paid_amount) || productAmount;
                         }
                     });
-                    
+
                     if (accountHead === 'bank') {
                         // Get account_id from first product in group (all should have same account_id)
                         const accountId = productGroup[0].product.account_id;
                         const bankId = productGroup[0].product.bank_id;
                         const paymentMode = productGroup[0].product.payment_mode;
                         const referenceNo = productGroup[0].product.reference_no;
-                        
+
                         // 1. Check account balance
                         const [accountRows] = await connection.execute(
                             'SELECT Balance, BankID FROM accounts WHERE ID = ? AND active = 1',
@@ -785,8 +785,8 @@ exports.addTrip = async (req, res) => {
                         if (currentBalance < groupTotal) {
                             await connection.rollback();
                             connection.release();
-                            return res.status(400).json({ 
-                                message: `Insufficient balance. Available balance: ${currentBalance.toFixed(2)}, Required: ${groupTotal.toFixed(2)}` 
+                            return res.status(400).json({
+                                message: `Insufficient balance. Available balance: ${currentBalance.toFixed(2)}, Required: ${groupTotal.toFixed(2)}`
                             });
                         }
 
@@ -801,7 +801,7 @@ exports.addTrip = async (req, res) => {
                         } else if (hasCash) {
                             purpose = 'Full Payment';
                         }
-                        
+
                         const transactionQuery = `
                             INSERT INTO transactions (
                                 AccountID, 
@@ -815,7 +815,7 @@ exports.addTrip = async (req, res) => {
                                 active
                             ) VALUES (?, ?, ?, 0, NOW(), ?, ?, NULL, 1)
                         `;
-                        
+
                         const [transactionResult] = await connection.execute(transactionQuery, [
                             accountId,
                             purpose,
@@ -823,7 +823,7 @@ exports.addTrip = async (req, res) => {
                             paymentMode || null,
                             referenceNo || null
                         ]);
-                        
+
                         transactionIDsForTrip.push(transactionResult.insertId);
 
                         // 3. Update Accounts table - subtract amount from balance
@@ -833,7 +833,7 @@ exports.addTrip = async (req, res) => {
                                 MD = NOW()
                             WHERE ID = ? AND active = 1
                         `;
-                        
+
                         const [updateResult] = await connection.execute(updateAccountQuery, [
                             groupTotal,
                             accountId
@@ -858,7 +858,7 @@ exports.addTrip = async (req, res) => {
                         } else if (hasCash) {
                             purpose = 'Full Payment from Advance Balance';
                         }
-                        
+
                         const transactionQuery = `
                             INSERT INTO transactions (
                                 cash_in_hand_id,
@@ -873,12 +873,12 @@ exports.addTrip = async (req, res) => {
                                 active
                             ) VALUES (NULL, NULL, ?, ?, 0, NULL, NULL, NOW(), NULL, 1)
                         `;
-                        
+
                         const [transactionResult] = await connection.execute(transactionQuery, [
                             purpose,
                             groupTotal
                         ]);
-                        
+
                         transactionIDsForTrip.push(transactionResult.insertId);
                         console.log(`Created transaction for Advance Balance payment: Amount=${groupTotal}, TransactionID=${transactionResult.insertId}`);
                     } else if (accountHead === 'cash_in_hand') {
@@ -887,15 +887,15 @@ exports.addTrip = async (req, res) => {
                         // If we've already inserted cash_in_hand entries in this transaction, use the last one's balance
                         // Otherwise, get from database
                         let currentCashBalance = 0;
-                        
+
                         if (cashInHandIdsForTransaction.length > 0) {
                             // Get balance from the last inserted cash_in_hand entry in this transaction
                             const [lastInsertedRow] = await connection.execute(
                                 `SELECT balance FROM cash_in_hand WHERE id = ?`,
                                 [cashInHandIdsForTransaction[cashInHandIdsForTransaction.length - 1]]
                             );
-                            currentCashBalance = lastInsertedRow.length > 0 
-                                ? parseFloat(lastInsertedRow[0]?.balance || 0) 
+                            currentCashBalance = lastInsertedRow.length > 0
+                                ? parseFloat(lastInsertedRow[0]?.balance || 0)
                                 : 0;
                         } else {
                             // First cash_in_hand entry in this transaction - get from database
@@ -905,22 +905,22 @@ exports.addTrip = async (req, res) => {
                                  ORDER BY created_at DESC, id DESC 
                                  LIMIT 1`
                             );
-                            currentCashBalance = lastBalanceRows.length > 0 
-                                ? parseFloat(lastBalanceRows[0]?.balance || 0) 
+                            currentCashBalance = lastBalanceRows.length > 0
+                                ? parseFloat(lastBalanceRows[0]?.balance || 0)
                                 : 0;
                         }
 
                         if (currentCashBalance < groupTotal) {
                             await connection.rollback();
                             connection.release();
-                            return res.status(400).json({ 
-                                message: `Insufficient cash in hand. Available balance: ${currentCashBalance.toFixed(2)}, Required: ${groupTotal.toFixed(2)}` 
+                            return res.status(400).json({
+                                message: `Insufficient cash in hand. Available balance: ${currentCashBalance.toFixed(2)}, Required: ${groupTotal.toFixed(2)}`
                             });
                         }
 
                         // 2. Calculate new balance from last entry's balance
                         const newBalance = currentCashBalance - groupTotal; // Debit subtracts from balance
-                        
+
                         // 3. Insert into cash_in_hand table with debit (cash paid out)
                         const insertCashInHandQuery = `
                             INSERT INTO cash_in_hand (
@@ -931,12 +931,12 @@ exports.addTrip = async (req, res) => {
                                 created_at
                             ) VALUES (?, 0, ?, 'Trip payment', NOW())
                         `;
-                        
+
                         const [cashInHandResult] = await connection.execute(insertCashInHandQuery, [
                             groupTotal, // Debit amount (cash paid out)
                             newBalance
                         ]);
-                        
+
                         const cashInHandIdForTransaction = cashInHandResult.insertId;
                         cashInHandIdsForTransaction.push(cashInHandIdForTransaction);
 
@@ -951,7 +951,7 @@ exports.addTrip = async (req, res) => {
                         } else if (hasCash) {
                             purpose = 'Full Payment';
                         }
-                        
+
                         const transactionQuery = `
                             INSERT INTO transactions (
                                 cash_in_hand_id,
@@ -964,124 +964,124 @@ exports.addTrip = async (req, res) => {
                                 active
                             ) VALUES (?, ?, ?, 0, 'Cash', NOW(), NULL, 1)
                         `;
-                        
+
                         const [transactionResult] = await connection.execute(transactionQuery, [
                             cashInHandIdForTransaction,
                             purpose,
                             groupTotal
                         ]);
-                        
+
                         transactionIDsForTrip.push(transactionResult.insertId);
                     }
                 }
             }
 
-        // Ensure status is a valid string - NEVER null or undefined
-        let tripStatus = 'Pending'; // Default value
-        if (status !== null && status !== undefined && status !== '') {
-            tripStatus = String(status).trim();
-        }
-        const validStatuses = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
-        let finalStatus = validStatuses.includes(tripStatus) ? tripStatus : 'Pending';
-        
-        // Ensure finalStatus is never null, undefined, or empty
-        if (!finalStatus || finalStatus === '') {
-            finalStatus = 'Pending';
-        }
+            // Ensure status is a valid string - NEVER null or undefined
+            let tripStatus = 'Pending'; // Default value
+            if (status !== null && status !== undefined && status !== '') {
+                tripStatus = String(status).trim();
+            }
+            const validStatuses = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
+            let finalStatus = validStatuses.includes(tripStatus) ? tripStatus : 'Pending';
 
-        // Generate trip_no if not provided (fallback if trigger doesn't work)
-        let finalTripNo = trip_no;
-        if (!finalTripNo || finalTripNo === '') {
-            try {
-                // Get the highest trip number
+            // Ensure finalStatus is never null, undefined, or empty
+            if (!finalStatus || finalStatus === '') {
+                finalStatus = 'Pending';
+            }
+
+            // Generate trip_no if not provided (fallback if trigger doesn't work)
+            let finalTripNo = trip_no;
+            if (!finalTripNo || finalTripNo === '') {
+                try {
+                    // Get the highest trip number
                     const [maxTrip] = await connection.execute(
-                    `SELECT MAX(CAST(SUBSTRING(trip_no, 6) AS UNSIGNED)) as max_num 
+                        `SELECT MAX(CAST(SUBSTRING(trip_no, 6) AS UNSIGNED)) as max_num 
                      FROM trips 
                      WHERE trip_no LIKE 'TRIP-%'`
-                );
-                const nextNum = (maxTrip[0]?.max_num || 0) + 1;
-                finalTripNo = `TRIP-${String(nextNum).padStart(6, '0')}`;
-                console.log('Generated trip_no:', finalTripNo);
-            } catch (err) {
-                console.error('Error generating trip_no:', err);
-                // Fallback: use timestamp-based trip number
-                finalTripNo = `TRIP-${Date.now().toString().slice(-6)}`;
+                    );
+                    const nextNum = (maxTrip[0]?.max_num || 0) + 1;
+                    finalTripNo = `TRIP-${String(nextNum).padStart(6, '0')}`;
+                    console.log('Generated trip_no:', finalTripNo);
+                } catch (err) {
+                    console.error('Error generating trip_no:', err);
+                    // Fallback: use timestamp-based trip number
+                    finalTripNo = `TRIP-${Date.now().toString().slice(-6)}`;
+                }
             }
-        }
 
-        // Update transaction purposes with trip_no and purchase type
-        // This applies to both bank and cash_in_hand transactions
-        if (finalTripNo && transactionIDsForTrip.length > 0) {
-            // Determine purchase type display name from products
-            const hasAdvance = products && products.some(p => p.purchase_type === 'advance');
-            const hasCash = products && products.some(p => p.purchase_type === 'cash');
-            let purchaseTypeDisplay = 'Payment';
-            if (hasAdvance && hasCash) {
-                purchaseTypeDisplay = 'Mixed Payment';
-            } else if (hasAdvance) {
-                purchaseTypeDisplay = 'Advance Payment';
-            } else if (hasCash) {
-                purchaseTypeDisplay = 'Full Payment';
-            }
-            
-            // Update all transaction purposes: "Purchase Type - Trip No"
-            const updateTransactionPurpose = `
+            // Update transaction purposes with trip_no and purchase type
+            // This applies to both bank and cash_in_hand transactions
+            if (finalTripNo && transactionIDsForTrip.length > 0) {
+                // Determine purchase type display name from products
+                const hasAdvance = products && products.some(p => p.purchase_type === 'advance');
+                const hasCash = products && products.some(p => p.purchase_type === 'cash');
+                let purchaseTypeDisplay = 'Payment';
+                if (hasAdvance && hasCash) {
+                    purchaseTypeDisplay = 'Mixed Payment';
+                } else if (hasAdvance) {
+                    purchaseTypeDisplay = 'Advance Payment';
+                } else if (hasCash) {
+                    purchaseTypeDisplay = 'Full Payment';
+                }
+
+                // Update all transaction purposes: "Purchase Type - Trip No"
+                const updateTransactionPurpose = `
                 UPDATE transactions 
                 SET Purpose = ? 
                 WHERE ID = ?
             `;
-            for (const transactionId of transactionIDsForTrip) {
-                await connection.execute(updateTransactionPurpose, [
-                    `${purchaseTypeDisplay} - ${finalTripNo}`,
-                    transactionId
-                ]);
+                for (const transactionId of transactionIDsForTrip) {
+                    await connection.execute(updateTransactionPurpose, [
+                        `${purchaseTypeDisplay} - ${finalTripNo}`,
+                        transactionId
+                    ]);
+                }
             }
-        }
 
-        // If we created cash_in_hand entries earlier, update them with the actual trip_no
-        if (cashInHandIdsForTransaction.length > 0 && finalTripNo) {
-            // Determine purchase type display name from products
-            const hasAdvance = products && products.some(p => p.purchase_type === 'advance');
-            const hasCash = products && products.some(p => p.purchase_type === 'cash');
-            let purchaseTypeDisplay = 'Payment';
-            if (hasAdvance && hasCash) {
-                purchaseTypeDisplay = 'Mixed Payment';
-            } else if (hasAdvance) {
-                purchaseTypeDisplay = 'Advance Payment';
-            } else if (hasCash) {
-                purchaseTypeDisplay = 'Full Payment';
-            }
-            
-            const updateCashInHandPurpose = `
+            // If we created cash_in_hand entries earlier, update them with the actual trip_no
+            if (cashInHandIdsForTransaction.length > 0 && finalTripNo) {
+                // Determine purchase type display name from products
+                const hasAdvance = products && products.some(p => p.purchase_type === 'advance');
+                const hasCash = products && products.some(p => p.purchase_type === 'cash');
+                let purchaseTypeDisplay = 'Payment';
+                if (hasAdvance && hasCash) {
+                    purchaseTypeDisplay = 'Mixed Payment';
+                } else if (hasAdvance) {
+                    purchaseTypeDisplay = 'Advance Payment';
+                } else if (hasCash) {
+                    purchaseTypeDisplay = 'Full Payment';
+                }
+
+                const updateCashInHandPurpose = `
                 UPDATE cash_in_hand 
                 SET purpose = ? 
                 WHERE id = ?
             `;
-            for (const cashInHandId of cashInHandIdsForTransaction) {
-                await connection.execute(updateCashInHandPurpose, [
-                    `${purchaseTypeDisplay} - ${finalTripNo}`,
-                    cashInHandId
-                ]);
+                for (const cashInHandId of cashInHandIdsForTransaction) {
+                    await connection.execute(updateCashInHandPurpose, [
+                        `${purchaseTypeDisplay} - ${finalTripNo}`,
+                        cashInHandId
+                    ]);
+                }
             }
-        }
 
-        // Pre-calculate total purchase amount for all products (used in multiple places)
-        // purchase_amount = (invoice_rate - discount) * quantity_ltr
-        let productsTotalAmount = 0;
-        if (products && products.length > 0) {
-            productsTotalAmount = products.reduce((sum, p) => {
-                const qty = parseFloat(p.quantity_ltr) || 0;
-                const invoiceRate = parseFloat(p.invoice_rate) || 0;
-                const discount = parseFloat(p.discount) || 0;
-                const rateAfterDiscount = invoiceRate - discount;
-                return sum + (qty * rateAfterDiscount);
-            }, 0);
-        }
+            // Pre-calculate total purchase amount for all products (used in multiple places)
+            // purchase_amount = (invoice_rate - discount) * quantity_ltr
+            let productsTotalAmount = 0;
+            if (products && products.length > 0) {
+                productsTotalAmount = products.reduce((sum, p) => {
+                    const qty = parseFloat(p.quantity_ltr) || 0;
+                    const invoiceRate = parseFloat(p.invoice_rate) || 0;
+                    const discount = parseFloat(p.discount) || 0;
+                    const rateAfterDiscount = invoiceRate - discount;
+                    return sum + (qty * rateAfterDiscount);
+                }, 0);
+            }
 
-        // NOTE: Pool entries for advance products are now created based on trip_depos table after trip is inserted
-        // This old code is disabled to prevent duplicate pool entries
-        // Pool entries will be created in the trip_depos section based on payable_amount
-        // Validation and balance checks are handled in the trip_depos section
+            // NOTE: Pool entries for advance products are now created based on trip_depos table after trip is inserted
+            // This old code is disabled to prevent duplicate pool entries
+            // Pool entries will be created in the trip_depos section based on payable_amount
+            // Validation and balance checks are handled in the trip_depos section
 
             // Build query for trip insert
             // PurchaseType is not stored in trips table, it's stored in trip_depos table per depo
@@ -1103,65 +1103,65 @@ exports.addTrip = async (req, res) => {
                 productsTotalAmount,  // total_amount = sum of purchase_amount from all products
                 CB
             ];
-        
-        console.log('Add Trip - Status received:', status, 'Type:', typeof status);
-        console.log('Add Trip - Processed status:', tripStatus, 'Final status:', finalStatus);
-        console.log('Add Trip - Full request body:', JSON.stringify(req.body, null, 2));
-        console.log('Add Trip - Query parameters:', JSON.stringify(queryParams, null, 2));
-        console.log('Add Trip - Query parameters count:', queryParams.length);
+
+            console.log('Add Trip - Status received:', status, 'Type:', typeof status);
+            console.log('Add Trip - Processed status:', tripStatus, 'Final status:', finalStatus);
+            console.log('Add Trip - Full request body:', JSON.stringify(req.body, null, 2));
+            console.log('Add Trip - Query parameters:', JSON.stringify(queryParams, null, 2));
+            console.log('Add Trip - Query parameters count:', queryParams.length);
 
             const [result] = await connection.execute(query, queryParams);
-        
-        console.log('Add Trip - Insert result:', result);
-        console.log('Add Trip - affectedRows:', result.affectedRows);
-        console.log('Add Trip - insertId:', result.insertId);
-        
-        // Handle case where insertId might be 0 (some MySQL configurations)
-        let tripInsertId = result.insertId;
-        if (!tripInsertId || tripInsertId === 0) {
-            // Try to get the last insert ID using MySQL function
-            try {
-                const [lastIdRows] = await connection.execute('SELECT LAST_INSERT_ID() as id');
-                tripInsertId = lastIdRows[0]?.id || null;
-                console.log('Add Trip - Retrieved LAST_INSERT_ID():', tripInsertId);
-            } catch (err) {
-                console.error('Error getting LAST_INSERT_ID():', err.message);
-                // If that fails, try to get the ID by querying the trip_no
+
+            console.log('Add Trip - Insert result:', result);
+            console.log('Add Trip - affectedRows:', result.affectedRows);
+            console.log('Add Trip - insertId:', result.insertId);
+
+            // Handle case where insertId might be 0 (some MySQL configurations)
+            let tripInsertId = result.insertId;
+            if (!tripInsertId || tripInsertId === 0) {
+                // Try to get the last insert ID using MySQL function
                 try {
-                    const [tripRows] = await connection.execute(
-                        'SELECT id FROM trips WHERE trip_no = ? ORDER BY id DESC LIMIT 1',
-                        [finalTripNo]
-                    );
-                    if (tripRows.length > 0) {
-                        tripInsertId = tripRows[0].id;
-                        console.log('Add Trip - Retrieved trip ID from trip_no:', tripInsertId);
+                    const [lastIdRows] = await connection.execute('SELECT LAST_INSERT_ID() as id');
+                    tripInsertId = lastIdRows[0]?.id || null;
+                    console.log('Add Trip - Retrieved LAST_INSERT_ID():', tripInsertId);
+                } catch (err) {
+                    console.error('Error getting LAST_INSERT_ID():', err.message);
+                    // If that fails, try to get the ID by querying the trip_no
+                    try {
+                        const [tripRows] = await connection.execute(
+                            'SELECT id FROM trips WHERE trip_no = ? ORDER BY id DESC LIMIT 1',
+                            [finalTripNo]
+                        );
+                        if (tripRows.length > 0) {
+                            tripInsertId = tripRows[0].id;
+                            console.log('Add Trip - Retrieved trip ID from trip_no:', tripInsertId);
+                        }
+                    } catch (err2) {
+                        console.error('Error getting trip ID from trip_no:', err2.message);
                     }
-                } catch (err2) {
-                    console.error('Error getting trip ID from trip_no:', err2.message);
                 }
             }
-        }
-        
-        if (!tripInsertId || tripInsertId === 0) {
-            await connection.rollback();
-            connection.release();
-            return res.status(500).json({ 
-                message: 'Failed to get trip ID after insertion. Trip may not have been created properly.' 
-            });
-        }
-        
-        console.log('Add Trip - Final tripInsertId:', tripInsertId);
 
-        // Update advance_balance entries with TripID
-        if (advanceBalanceEntryIds && Object.keys(advanceBalanceEntryIds).length > 0) {
-            for (const [depoId, entryId] of Object.entries(advanceBalanceEntryIds)) {
-                await connection.execute(
-                    `UPDATE advance_balance SET TripID = ?, MD = NOW() WHERE ID = ?`,
-                    [tripInsertId, entryId]
-                );
-                console.log(`Updated advance_balance entry ${entryId} with TripID=${tripInsertId} for depo ${depoId}`);
+            if (!tripInsertId || tripInsertId === 0) {
+                await connection.rollback();
+                connection.release();
+                return res.status(500).json({
+                    message: 'Failed to get trip ID after insertion. Trip may not have been created properly.'
+                });
             }
-        }
+
+            console.log('Add Trip - Final tripInsertId:', tripInsertId);
+
+            // Update advance_balance entries with TripID
+            if (advanceBalanceEntryIds && Object.keys(advanceBalanceEntryIds).length > 0) {
+                for (const [depoId, entryId] of Object.entries(advanceBalanceEntryIds)) {
+                    await connection.execute(
+                        `UPDATE advance_balance SET TripID = ?, MD = NOW() WHERE ID = ?`,
+                        [tripInsertId, entryId]
+                    );
+                    console.log(`Updated advance_balance entry ${entryId} with TripID=${tripInsertId} for depo ${depoId}`);
+                }
+            }
 
             // Insert transaction for credit (loan) products only
             const creditProducts = products && products.filter(p => p.purchase_type === 'credit');
@@ -1175,7 +1175,7 @@ exports.addTrip = async (req, res) => {
                         const rateAfterDiscount = invoiceRate - discount;
                         return sum + (qty * rateAfterDiscount);
                     }, 0);
-                    
+
                     // Get unique depo names for credit products
                     const depoIds = [...new Set(creditProducts.map(p => p.depo_id))];
                     const depoNames = [];
@@ -1189,7 +1189,7 @@ exports.addTrip = async (req, res) => {
                         }
                     }
                     const depoNameStr = depoNames.length > 0 ? depoNames.join(', ') : 'Multiple Depots';
-                    
+
                     const creditTransactionQuery = `
                         INSERT INTO transactions (
                             trip_id,
@@ -1205,14 +1205,14 @@ exports.addTrip = async (req, res) => {
                             active
                         ) VALUES (?, NULL, NULL, ?, 0, ?, NOW(), NULL, NULL, ?, 1)
                     `;
-                    
+
                     const [creditTransactionResult] = await connection.execute(creditTransactionQuery, [
                         tripInsertId,
                         `Credit from ${depoNameStr}`,
                         creditTotalAmount,  // Credit = Total Amount for credit products
                         creditTotalAmount   // Balance = Total Amount
                     ]);
-                    
+
                     console.log(`Inserted credit transaction for trip ${tripInsertId}: Amount=${creditTotalAmount}, TransactionID=${creditTransactionResult.insertId}`);
                 } catch (err) {
                     console.error('Error inserting credit transaction:', err.message);
@@ -1220,11 +1220,11 @@ exports.addTrip = async (req, res) => {
                     // Don't rollback here, just log the error - the trip was already created
                 }
             }
-            
+
             // Insert products into trip_products table
             // Store product IDs as we insert them (declare outside if block for scope)
             let insertedProductIds = [];
-            
+
             if (tripInsertId && products && products.length > 0) {
                 try {
                     const insertProductQuery = `
@@ -1234,16 +1234,16 @@ exports.addTrip = async (req, res) => {
                             CB, CD, MD, Active
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 1)
                     `;
-                    
+
                     // Initialize array for this trip
                     insertedProductIds = [];
-                    
+
                     for (const product of products) {
                         const invoiceRate = parseFloat(product.invoice_rate) || 0;
                         const discount = parseFloat(product.discount) || 0;
                         const rateAfterDiscount = invoiceRate - discount;
                         const purchaseAmount = (parseFloat(product.quantity_ltr) || 0) * rateAfterDiscount;
-                        
+
                         // Get company_id from depo_company relationship
                         let companyId = null;
                         try {
@@ -1257,7 +1257,7 @@ exports.addTrip = async (req, res) => {
                         } catch (err) {
                             console.log('Note: Could not get company_id for depo:', err.message);
                         }
-                        
+
                         const [result] = await connection.execute(insertProductQuery, [
                             tripInsertId,
                             companyId,  // comp_id (company_id)
@@ -1272,12 +1272,12 @@ exports.addTrip = async (req, res) => {
                             product.no_of_containers || null,
                             CB
                         ]);
-                        
+
                         // Store the inserted product ID
                         insertedProductIds.push(result.insertId);
                         console.log(`Inserted product with ID ${result.insertId}: ${product.product_type} for depo ${product.depo_id}`);
                     }
-                    
+
                     console.log(`Inserted ${products.length} product(s) for trip ${tripInsertId}. Product IDs: ${insertedProductIds.join(', ')}`);
                 } catch (err) {
                     console.error('Error inserting products:', err.message);
@@ -1285,11 +1285,11 @@ exports.addTrip = async (req, res) => {
                     throw err; // Re-throw to trigger rollback
                 }
             }
-            
+
             // Insert into trip_depos table (one entry per product with product_id)
             // Define depoPurchaseData outside try block so it's accessible for pool entry creation
             let depoPurchaseData = {};
-            
+
             if (tripInsertId && products && products.length > 0 && insertedProductIds && insertedProductIds.length > 0) {
                 try {
                     // Create trip_depos entries for each product (not aggregated)
@@ -1301,42 +1301,42 @@ exports.addTrip = async (req, res) => {
                             CB, CD, MD, Active
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 1)
                     `;
-                    
+
                     // Match products with their inserted IDs (they're in the same order)
                     for (let i = 0; i < products.length && i < insertedProductIds.length; i++) {
                         const product = products[i];
                         const productId = insertedProductIds[i];
-                        
+
                         const depoId = product.depo_id;
                         const purchaseType = product.purchase_type || 'credit';
-                        
+
                         const invoiceRate = parseFloat(product.invoice_rate) || 0;
                         const discount = parseFloat(product.discount) || 0;
                         const rateAfterDiscount = invoiceRate - discount;
                         const purchaseAmount = (parseFloat(product.quantity_ltr) || 0) * rateAfterDiscount;
-                        
+
                         let paidAmount = parseFloat(product.paid_amount) || 0;
                         let payableAmount = 0;
-                        
+
                         // Set paid_amount and payable_amount based on purchase type
                         if (purchaseType === 'cash') {
                             paidAmount = purchaseAmount;
                             payableAmount = purchaseAmount;
                         } else if (purchaseType === 'advance') {
                             if (paidAmount === 0 || !paidAmount) {
-                            paidAmount = purchaseAmount;
+                                paidAmount = purchaseAmount;
                             }
                             payableAmount = purchaseAmount;
                         } else {
                             paidAmount = 0;
                             payableAmount = purchaseAmount;
                         }
-                        
+
                         // Safety: paid_amount must never exceed payable_amount
                         if (paidAmount > payableAmount) {
                             paidAmount = payableAmount;
                         }
-                        
+
                         // Insert trip_depos entry for this specific product with its product_id
                         // NOTE: advance usage is tracked in the advance_balance table (not trip_depos.advance_balance)
                         console.log(`Inserting trip_depos: trip_id=${tripInsertId}, depo_id=${depoId}, product_id=${productId}, purchase_type=${purchaseType}, paid_amount=${paidAmount}, payable_amount=${payableAmount}`);
@@ -1349,7 +1349,7 @@ exports.addTrip = async (req, res) => {
                             payableAmount,
                             CB
                         ]);
-                        
+
                         // Also build depoPurchaseData for pool entry creation (aggregated by depo + purchase_type)
                         const key = `${depoId}_${purchaseType}`;
                         if (!depoPurchaseData[key]) {
@@ -1363,14 +1363,14 @@ exports.addTrip = async (req, res) => {
                         depoPurchaseData[key].paid_amount += paidAmount;
                         depoPurchaseData[key].payable_amount += payableAmount;
                     }
-                    
+
                     console.log(`Successfully inserted ${products.length} trip_depos entries (one per product) for trip ${tripInsertId}`);
                 } catch (err) {
                     console.error('Error inserting trip_depos:', err.message);
                     console.error('Error stack:', err.stack);
                     throw err; // Re-throw to trigger rollback
                 }
-                
+
                 // Create pool entries separately with its own error handling
                 // Pool entries are created only after trip_depos insertion succeeds
                 // If pool entry creation fails, the transaction will be rolled back
@@ -1383,7 +1383,7 @@ exports.addTrip = async (req, res) => {
                     // - If Advance Balance = 0 => purchase_type=credit (unpaid; uses credit limit)
                     const advanceConsumedByDepo = {}; // sum(paid_amount) for cash/advance
                     const creditUsedByDepo = {};      // sum((payable_amount - paid_amount)) for credit/advance
-                    
+
                     for (const depoData of Object.values(depoPurchaseData)) {
                         const depoId = depoData.depo_id;
                         const purchaseType = depoData.purchase_type || 'credit';
@@ -1391,30 +1391,30 @@ exports.addTrip = async (req, res) => {
                         const paidAmount = parseFloat(depoData.paid_amount || 0) || 0;
                         const safePaid = Math.min(paidAmount, payableAmount);
                         const remainingDue = Math.max(0, payableAmount - safePaid);
-                        
+
                         if (purchaseType === 'cash' || purchaseType === 'advance') {
                             if (!advanceConsumedByDepo[depoId]) advanceConsumedByDepo[depoId] = 0;
                             advanceConsumedByDepo[depoId] += safePaid;
                         }
-                        
+
                         // Any remaining due after paid_amount should hit credit limit (pool debit + depo.Balance reduction)
                         if (remainingDue > 0) {
                             if (!creditUsedByDepo[depoId]) creditUsedByDepo[depoId] = 0;
                             creditUsedByDepo[depoId] += remainingDue;
                         }
                     }
-                    
+
                     const allDepoIds = Array.from(new Set([
                         ...Object.keys(advanceConsumedByDepo).map(k => parseInt(k, 10)),
                         ...Object.keys(creditUsedByDepo).map(k => parseInt(k, 10))
                     ])).filter(n => !isNaN(n));
-                    
+
                     console.log(`addTrip pool/advance processing: depos=${allDepoIds.join(', ') || 'N/A'}`);
-                    
+
                     for (const depoId of allDepoIds) {
                         const advanceConsumed = parseFloat(advanceConsumedByDepo[depoId] || 0) || 0;
                         const creditUsed = parseFloat(creditUsedByDepo[depoId] || 0) || 0;
-                        
+
                         // 1) Consume advance (insert Debit entry in advance_balance with TripID)
                         if (advanceConsumed > 0) {
                             const [lastAdvanceRows] = await connection.execute(
@@ -1427,17 +1427,17 @@ exports.addTrip = async (req, res) => {
                                 ? parseFloat(lastAdvanceRows[0].Balance || 0)
                                 : 0;
                             const newAdvanceBalance = Math.max(0, currentAdvanceBalance - advanceConsumed);
-                            
+
                             await connection.execute(
                                 `INSERT INTO advance_balance (
                                     DepoID, TripID, recovery_id, payment_id, Debit, Credit, Balance, Date, MD, CD, CB, Active
                                 ) VALUES (?, ?, NULL, NULL, ?, 0, ?, NOW(), NOW(), NOW(), ?, 1)`,
                                 [depoId, tripInsertId, advanceConsumed, newAdvanceBalance, CB]
                             );
-                            
+
                             console.log(`Consumed advance for trip ${tripInsertId}, depo ${depoId}: Debit=${advanceConsumed}, NewAdvanceBalance=${newAdvanceBalance}`);
                         }
-                        
+
                         // 2) Use credit limit for remaining due (pool debit + depo.Balance reduction)
                         if (creditUsed > 0) {
                             const [depoBalanceRows] = await connection.execute(
@@ -1446,13 +1446,13 @@ exports.addTrip = async (req, res) => {
                             );
                             const currentDepoBalance = depoBalanceRows.length > 0 ? parseFloat(depoBalanceRows[0].Balance || 0) : 0;
                             const newDepoBalance = currentDepoBalance - creditUsed;
-                            
+
                             // Update depo.Balance (credit limit remaining)
                             await connection.execute(
                                 `UPDATE depo SET Balance = ?, MD = NOW() WHERE id = ?`,
                                 [newDepoBalance, depoId]
                             );
-                            
+
                             // Previous DepoLimit from pool (running credit limit)
                             const [poolRows] = await connection.execute(
                                 `SELECT DepoLimit FROM pool WHERE DepoID = ? AND active = 1 ORDER BY ID DESC LIMIT 1`,
@@ -1460,7 +1460,7 @@ exports.addTrip = async (req, res) => {
                             );
                             const previousDepoLimit = poolRows.length > 0 ? parseFloat(poolRows[0].DepoLimit || 0) : currentDepoBalance;
                             const newDepoLimit = previousDepoLimit - creditUsed;
-                            
+
                             const poolQuery = `
                                 INSERT INTO pool (
                                     DepoID,
@@ -1476,7 +1476,7 @@ exports.addTrip = async (req, res) => {
                                     active
                                 ) VALUES (?, ?, ?, 0, ?, NULL, NULL, NOW(), ?, NOW(), 1)
                             `;
-                            
+
                             await connection.execute(poolQuery, [
                                 depoId,
                                 tripInsertId,
@@ -1484,11 +1484,11 @@ exports.addTrip = async (req, res) => {
                                 newDepoLimit,
                                 CB
                             ]);
-                            
+
                             console.log(`Pool debit for trip ${tripInsertId}, depo ${depoId}: Debit=${creditUsed}, PreviousDepoLimit=${previousDepoLimit}, NewDepoLimit=${newDepoLimit}`);
                         }
                     }
-                    
+
                     console.log(`Inserted ${Object.keys(depoPurchaseData).length} depo purchase record(s) for trip ${tripInsertId}`);
                 } catch (poolErr) {
                     console.error(`CRITICAL ERROR creating pool entries for trip ${tripInsertId}:`, poolErr.message);
@@ -1497,23 +1497,23 @@ exports.addTrip = async (req, res) => {
                     // Re-throw the error so transaction can be rolled back
                     throw new Error(`Failed to create pool entries: ${poolErr.message}`);
                 }
-                    
-                    // Update trips.paid to sum of all trip_depos.paid_amount for this trip
+
+                // Update trips.paid to sum of all trip_depos.paid_amount for this trip
                 if (tripInsertId) {
                     try {
-                    const [tripDeposSum] = await connection.execute(
-                        `SELECT COALESCE(SUM(paid_amount), 0) as total_paid
+                        const [tripDeposSum] = await connection.execute(
+                            `SELECT COALESCE(SUM(paid_amount), 0) as total_paid
                          FROM trip_depos
                          WHERE trip_id = ? AND Active = 1`,
-                        [tripInsertId]
-                    );
-                    const totalPaidForTrip = parseFloat(tripDeposSum[0]?.total_paid || 0);
-                    await connection.execute(
-                        `UPDATE trips SET paid = ?, total_amount = ? WHERE ID = ?`,
-                        [totalPaidForTrip, productsTotalAmount, tripInsertId]
-                    );
-                    console.log(`Updated trip ${tripInsertId} paid = ${totalPaidForTrip}, total_amount = ${productsTotalAmount}`);
-                        } catch (updateErr) {
+                            [tripInsertId]
+                        );
+                        const totalPaidForTrip = parseFloat(tripDeposSum[0]?.total_paid || 0);
+                        await connection.execute(
+                            `UPDATE trips SET paid = ?, total_amount = ? WHERE ID = ?`,
+                            [totalPaidForTrip, productsTotalAmount, tripInsertId]
+                        );
+                        console.log(`Updated trip ${tripInsertId} paid = ${totalPaidForTrip}, total_amount = ${productsTotalAmount}`);
+                    } catch (updateErr) {
                         console.error('Error updating trip paid/total_amount:', updateErr.message);
                         // Don't throw - trip was created, just log the error
                     }
@@ -1544,7 +1544,7 @@ exports.addTrip = async (req, res) => {
                             `SELECT ID, trip_id FROM transactions WHERE ID = ? AND active = 1`,
                             [transactionId]
                         );
-                        
+
                         if (verifyRows.length === 0) {
                             console.error(`Transaction ${transactionId} not found or inactive`);
                         } else {
@@ -1587,7 +1587,7 @@ exports.addTrip = async (req, res) => {
                                 `SELECT DepoID FROM pool WHERE ID = ?`,
                                 [poolEntryId]
                             );
-                            
+
                             if (poolRows.length > 0) {
                                 const poolDepoId = poolRows[0].DepoID;
                                 await connection.execute(
@@ -1610,11 +1610,11 @@ exports.addTrip = async (req, res) => {
             await connection.commit();
             connection.release();
 
-        console.log('Trip added successfully with ID:', result.insertId);
-        res.json({
-            message: 'Trip added successfully',
-            id: result.insertId
-        });
+            console.log('Trip added successfully with ID:', result.insertId);
+            res.json({
+                message: 'Trip added successfully',
+                id: result.insertId
+            });
         } catch (err) {
             await connection.rollback();
             connection.release();
@@ -1630,15 +1630,15 @@ exports.addTrip = async (req, res) => {
             sql: err.sql
         });
         if (err.code === 'ER_NO_SUCH_TABLE') {
-            res.status(500).json({ 
+            res.status(500).json({
                 message: 'Trips table does not exist. Please create the table first.',
                 error: err.message,
                 sqlMessage: err.sqlMessage
             });
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message, 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message,
                 sqlMessage: err.sqlMessage,
                 code: err.code,
                 errno: err.errno
@@ -1674,7 +1674,7 @@ exports.getTodayPolSales = async (req, res) => {
             WHERE ps.Active = 1
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query);
         res.json(rows);
     } catch (err) {
@@ -1682,9 +1682,9 @@ exports.getTodayPolSales = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }
@@ -1694,7 +1694,7 @@ exports.getTodayPolSales = async (req, res) => {
 exports.updateTrip = async (req, res) => {
     try {
         console.log('Received update trip data:', req.body);
-        
+
         const {
             id,
             trip_no,
@@ -1750,12 +1750,12 @@ exports.updateTrip = async (req, res) => {
         }
         const validStatuses = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
         const finalStatus = validStatuses.includes(tripStatus) ? tripStatus : 'Pending';
-        
+
         // Ensure finalStatus is never null, undefined, or empty
         if (!finalStatus || finalStatus === '') {
             tripStatus = 'Pending';
         }
-        
+
         console.log('Update Trip - Status received:', status, 'Type:', typeof status);
         console.log('Update Trip - Processed status:', tripStatus, 'Final status:', finalStatus);
         console.log('Update Trip - Full request body:', JSON.stringify(req.body, null, 2));
@@ -1774,12 +1774,12 @@ exports.updateTrip = async (req, res) => {
             completed_at || null,
             id
         ];
-        
+
         console.log('Update Trip - Query parameters count:', queryParams.length);
         console.log('Update Trip - Status parameter:', queryParams[9]);
 
         const [result] = await db.execute(query, queryParams);
-        
+
         console.log('Update Trip - Update result:', result);
 
         if (result.affectedRows === 0) {
@@ -1797,10 +1797,10 @@ exports.updateTrip = async (req, res) => {
             sqlState: err.sqlState,
             errno: err.errno
         });
-        res.status(500).json({ 
-            message: 'Server Error', 
+        res.status(500).json({
+            message: 'Server Error',
             error: err.message,
-            sqlMessage: err.sqlMessage 
+            sqlMessage: err.sqlMessage
         });
     }
 };
@@ -1831,7 +1831,7 @@ exports.deleteTrip = async (req, res) => {
         }
 
         const trip = tripRows[0];
-        
+
         // Get depo_ids from trip_depos table for logging and advance_balance restoration
         let depoIds = [];
         let totalTripAdvance = 0;
@@ -1841,7 +1841,7 @@ exports.deleteTrip = async (req, res) => {
                 [id]
             );
             depoIds = depoRows.map(r => r.depo_id);
-            
+
             // Calculate total advance balance used in this trip
             // NOTE: Advance usage is recorded as Debit entries in advance_balance table linked by TripID.
             const [advanceSum] = await connection.execute(
@@ -1856,14 +1856,14 @@ exports.deleteTrip = async (req, res) => {
         } catch (err) {
             console.log('Error getting depo_ids from trip_depos:', err.message);
         }
-        
+
         console.log(`Starting soft delete for trip ${id} (${trip.trip_no}). DepoIDs: ${depoIds.join(', ') || 'N/A'}. Advance Balance: ${totalTripAdvance}`);
 
         // Step 0: Soft delete advance_balance rows for this trip and recalculate balances
         let advanceDeletionSummary = [];
         try {
             console.log(`Starting advance_balance soft delete for trip ${id}`);
-            
+
             // Get all advance_balance records for this trip (both Debit and Credit entries)
             const [advanceRows] = await connection.execute(
                 `SELECT ab.ID, ab.DepoID, ab.Debit, ab.Credit, d.name as depo_name
@@ -1873,27 +1873,27 @@ exports.deleteTrip = async (req, res) => {
                    AND ab.Active = 1`,
                 [id]
             );
-            
+
             console.log(`Found ${advanceRows.length} advance_balance record(s) for trip ${id}`);
-            
+
             if (advanceRows.length > 0) {
                 // Group by DepoID to track affected depos
                 const depoIds = [...new Set(advanceRows.map(r => r.DepoID))];
-                
+
                 // Soft delete all advance_balance rows for this trip
                 const [softDeleteResult] = await connection.execute(
                     `UPDATE advance_balance SET Active = 0, MD = NOW() WHERE TripID = ? AND Active = 1`,
                     [id]
                 );
                 console.log(`Soft deleted ${softDeleteResult.affectedRows} advance_balance record(s) for trip ${id}`);
-                
+
                 // Recalculate balances for each affected depo
                 for (const depoId of depoIds) {
                     const depoRows = advanceRows.filter(r => r.DepoID === depoId);
                     const depoName = depoRows[0]?.depo_name || `Depo ${depoId}`;
                     const totalDebit = depoRows.reduce((sum, r) => sum + (parseFloat(r.Debit) || 0), 0);
                     const totalCredit = depoRows.reduce((sum, r) => sum + (parseFloat(r.Credit) || 0), 0);
-                    
+
                     // Get balance before recalculation
                     const [beforeRows] = await connection.execute(
                         `SELECT Balance FROM advance_balance 
@@ -1902,12 +1902,12 @@ exports.deleteTrip = async (req, res) => {
                         [depoId]
                     );
                     const balanceBefore = beforeRows.length > 0 ? parseFloat(beforeRows[0].Balance || 0) : 0;
-                    
+
                     // Recalculate balances for this depo
                     const finalBalance = await recalculateAdvanceBalances(connection, depoId);
-                    
+
                     console.log(`✅ Recalculated advance_balance for ${depoName} (ID: ${depoId}): Final Balance=${finalBalance}`);
-                    
+
                     // Track for summary
                     advanceDeletionSummary.push({
                         depoName,
@@ -2075,14 +2075,14 @@ exports.deleteTrip = async (req, res) => {
                 [id]
             );
             const recoveryIds = recoveryRows.map(r => r.ID);
-            
+
             // Soft delete recoveries
             const [recoveriesResult] = await connection.execute(
                 'UPDATE recoveries SET Active = 0, MD = NOW() WHERE trip_id = ? AND Active = 1',
                 [id]
             );
             console.log(`Soft deleted ${recoveriesResult.affectedRows} recovery record(s) for trip_id ${id}`);
-            
+
             // Step 8.0: Soft delete settlements for these recoveries
             if (recoveryIds.length > 0) {
                 try {
@@ -2097,12 +2097,12 @@ exports.deleteTrip = async (req, res) => {
                     console.error('Error stack:', err.stack);
                 }
             }
-            
+
             // Step 8.0.5: Soft delete advance_balance entries linked via recovery_id
             if (recoveryIds.length > 0) {
                 try {
                     console.log(`Starting advance_balance soft delete for recovery_ids: ${recoveryIds.join(', ')}`);
-                    
+
                     // Get all advance_balance records for these recoveries
                     const placeholders = recoveryIds.map(() => '?').join(',');
                     const [advanceRecoveryRows] = await connection.execute(
@@ -2113,27 +2113,27 @@ exports.deleteTrip = async (req, res) => {
                            AND ab.Active = 1`,
                         recoveryIds
                     );
-                    
+
                     console.log(`Found ${advanceRecoveryRows.length} advance_balance record(s) for recovery_ids: ${recoveryIds.join(', ')}`);
-                    
+
                     if (advanceRecoveryRows.length > 0) {
                         // Group by DepoID to track affected depos
                         const depoIds = [...new Set(advanceRecoveryRows.map(r => r.DepoID))];
-                        
+
                         // Soft delete all advance_balance rows for these recoveries
                         const [advanceRecoveryDeleteResult] = await connection.execute(
                             `UPDATE advance_balance SET Active = 0, MD = NOW() WHERE recovery_id IN (${placeholders}) AND Active = 1`,
                             recoveryIds
                         );
                         console.log(`Soft deleted ${advanceRecoveryDeleteResult.affectedRows} advance_balance record(s) for recovery_ids: ${recoveryIds.join(', ')}`);
-                        
+
                         // Recalculate balances for each affected depo
                         for (const depoId of depoIds) {
                             const depoRows = advanceRecoveryRows.filter(r => r.DepoID === depoId);
                             const depoName = depoRows[0]?.depo_name || `Depo ${depoId}`;
                             const totalDebit = depoRows.reduce((sum, r) => sum + (parseFloat(r.Debit) || 0), 0);
                             const totalCredit = depoRows.reduce((sum, r) => sum + (parseFloat(r.Credit) || 0), 0);
-                            
+
                             // Get balance before recalculation
                             const [beforeRows] = await connection.execute(
                                 `SELECT Balance FROM advance_balance 
@@ -2142,12 +2142,12 @@ exports.deleteTrip = async (req, res) => {
                                 [depoId]
                             );
                             const balanceBefore = beforeRows.length > 0 ? parseFloat(beforeRows[0].Balance || 0) : 0;
-                            
+
                             // Recalculate balances for this depo
                             const finalBalance = await recalculateAdvanceBalances(connection, depoId);
-                            
+
                             console.log(`✅ Recalculated advance_balance for ${depoName} (ID: ${depoId}) after recovery deletion: Final Balance=${finalBalance}`);
-                            
+
                             // Track for summary
                             advanceDeletionSummary.push({
                                 depoName,
@@ -2168,7 +2168,7 @@ exports.deleteTrip = async (req, res) => {
                     // Don't throw - continue with trip deletion even if advance deletion fails
                 }
             }
-            
+
             // Step 8.1: Soft delete pool entries for these recoveries
             if (recoveryIds.length > 0) {
                 for (const recoveryId of recoveryIds) {
@@ -2177,19 +2177,19 @@ exports.deleteTrip = async (req, res) => {
                         'SELECT ID, DepoID, Credit FROM pool WHERE recovery_id = ? AND active = 1',
                         [recoveryId]
                     );
-                    
+
                     if (poolRecoveryRows.length > 0) {
                         const minPoolId = Math.min(...poolRecoveryRows.map(r => r.ID));
                         const poolDepoIds = [...new Set(poolRecoveryRows.map(r => r.DepoID))];
                         const totalCredits = poolRecoveryRows.reduce((sum, r) => sum + (parseFloat(r.Credit) || 0), 0);
-                        
+
                         // Soft delete these pool rows
                         const [poolRecoveryDeleteResult] = await connection.execute(
                             'UPDATE pool SET active = 0, MD = NOW() WHERE recovery_id = ? AND active = 1',
                             [recoveryId]
                         );
                         console.log(`Soft deleted ${poolRecoveryDeleteResult.affectedRows} pool record(s) for recovery_id ${recoveryId}`);
-                        
+
                         // Recalculate balances for each affected depo
                         for (const poolDepoId of poolDepoIds) {
                             const finalBalance = await recalculatePoolBalancesFromRow(connection, poolDepoId, minPoolId);
@@ -2231,12 +2231,12 @@ exports.deleteTrip = async (req, res) => {
                 'SELECT ID, AccountID, cash_in_hand_id, Credit, Debit, active FROM transactions WHERE trip_id = ?',
                 [id]
             );
-            
+
             console.log(`[LOG] Found ${allTripTransactions.length} transaction(s) directly linked to trip_id ${id}`);
             if (allTripTransactions.length > 0) {
                 console.log(`[LOG] Direct trip transactions details:`, JSON.stringify(allTripTransactions, null, 2));
             }
-            
+
             // Method 2: Also get transactionIDs from payments and recoveries tables
             console.log(`\n[LOG] Method 2: Querying payments table for trip_id = ${id}`);
             const [paymentTransactionRows] = await connection.execute(
@@ -2244,20 +2244,20 @@ exports.deleteTrip = async (req, res) => {
                 [id]
             );
             console.log(`[LOG] Found ${paymentTransactionRows.length} payment transactionID(s):`, paymentTransactionRows.map(r => r.transactionID));
-            
+
             console.log(`\n[LOG] Method 2: Querying recoveries table for trip_id = ${id}`);
             const [recoveryTransactionRows] = await connection.execute(
                 'SELECT DISTINCT transactionID FROM recoveries WHERE trip_id = ? AND transactionID IS NOT NULL',
                 [id]
             );
             console.log(`[LOG] Found ${recoveryTransactionRows.length} recovery transactionID(s):`, recoveryTransactionRows.map(r => r.transactionID));
-            
+
             // Get additional transactions from payments/recoveries that might not have trip_id set
             const additionalTransactionIds = [
                 ...paymentTransactionRows.map(r => r.transactionID),
                 ...recoveryTransactionRows.map(r => r.transactionID)
             ];
-            
+
             let additionalTransactions = [];
             if (additionalTransactionIds.length > 0) {
                 console.log(`\n[LOG] Querying transactions table for additional transaction IDs: ${additionalTransactionIds.join(', ')}`);
@@ -2272,23 +2272,23 @@ exports.deleteTrip = async (req, res) => {
                     console.log(`[LOG] Additional transactions details:`, JSON.stringify(additionalTransactions, null, 2));
                 }
             }
-            
+
             // Combine all transactions
             const allTransactions = [...allTripTransactions, ...additionalTransactions];
             console.log(`\n[LOG] Combined total transactions before deduplication: ${allTransactions.length}`);
-            
+
             // Remove duplicates by transaction ID
             const uniqueTransactions = Array.from(
                 new Map(allTransactions.map(t => [t.ID, t])).values()
             );
-            
+
             console.log(`[LOG] Total unique transactions after deduplication: ${uniqueTransactions.length}`);
             console.log(`[LOG] Unique transaction IDs:`, uniqueTransactions.map(t => t.ID).join(', '));
-            
+
             // Collect unique cash_in_hand_ids and accountids
             const cashInHandIds = new Set();
             const accountIds = new Set();
-            
+
             console.log(`\n[LOG] Processing each transaction to collect cash_in_hand_ids and accountids:`);
             for (const transaction of uniqueTransactions) {
                 const accountID = transaction.AccountID;
@@ -2341,21 +2341,21 @@ exports.deleteTrip = async (req, res) => {
                     console.log(`  [LOG] - AccountID ${accountID} found but transaction is inactive, skipping account adjustment`);
                 }
             }
-            
+
             console.log(`\n[LOG] Summary of collected IDs:`);
             console.log(`  - Total unique cash_in_hand_ids collected: ${cashInHandIds.size}`);
             console.log(`  - cash_in_hand_ids: [${Array.from(cashInHandIds).join(', ')}]`);
             console.log(`  - Total unique accountids collected: ${accountIds.size}`);
             console.log(`  - accountids: [${Array.from(accountIds).join(', ')}]`);
-            
+
             // Set active=0 for all unique cash_in_hand_ids
             if (cashInHandIds.size > 0) {
                 const cashInHandIdsArray = Array.from(cashInHandIds);
                 const cashPlaceholders = cashInHandIdsArray.map(() => '?').join(',');
-                
+
                 console.log(`\n[LOG] ===== SOFT DELETING cash_in_hand RECORDS =====`);
                 console.log(`[LOG] Attempting to soft delete cash_in_hand records with IDs: ${cashInHandIdsArray.join(', ')}`);
-                
+
                 // Check status before deletion
                 console.log(`[LOG] Checking cash_in_hand records status BEFORE deletion:`);
                 const [beforeCheckRows] = await connection.execute(
@@ -2363,13 +2363,13 @@ exports.deleteTrip = async (req, res) => {
                     cashInHandIdsArray
                 );
                 console.log(`[LOG] Before deletion - cash_in_hand records:`, JSON.stringify(beforeCheckRows, null, 2));
-                
+
                 const [cashInHandResult] = await connection.execute(
                     `UPDATE cash_in_hand SET Active = 0, MD = NOW() WHERE id IN (${cashPlaceholders}) AND Active = 1`,
                     cashInHandIdsArray
                 );
                 console.log(`[LOG] ✓ Soft deleted ${cashInHandResult.affectedRows} cash_in_hand record(s) with IDs: ${cashInHandIdsArray.join(', ')}`);
-                
+
                 // Check status after deletion
                 console.log(`[LOG] Checking cash_in_hand records status AFTER deletion:`);
                 const [afterCheckRows] = await connection.execute(
@@ -2377,14 +2377,14 @@ exports.deleteTrip = async (req, res) => {
                     cashInHandIdsArray
                 );
                 console.log(`[LOG] After deletion - cash_in_hand records:`, JSON.stringify(afterCheckRows, null, 2));
-                
+
                 if (cashInHandResult.affectedRows === 0) {
                     console.warn(`[LOG] ⚠ WARNING: No cash_in_hand records were updated. IDs attempted: ${cashInHandIdsArray.join(', ')}`);
                     console.log(`[LOG] All requested IDs may already be inactive or do not exist.`);
                 } else if (cashInHandResult.affectedRows < cashInHandIdsArray.length) {
                     console.warn(`[LOG] ⚠ WARNING: Only ${cashInHandResult.affectedRows} out of ${cashInHandIdsArray.length} cash_in_hand records were updated.`);
                 }
-                
+
                 // Recalculate all cash_in_hand balances
                 console.log(`\n[LOG] Recalculating all cash_in_hand balances...`);
                 await recalculateAllBalances(connection);
@@ -2392,7 +2392,7 @@ exports.deleteTrip = async (req, res) => {
             } else {
                 console.log(`\n[LOG] No cash_in_hand_ids found to soft delete`);
             }
-            
+
             // Restore account balances (DO NOT set accounts to active = 0)
             // Account balances are already restored above in the transaction loop (lines 2234-2246)
             // We only restore the balance, we don't deactivate the accounts
@@ -2419,7 +2419,7 @@ exports.deleteTrip = async (req, res) => {
         console.log(`  - pol_sale: soft deleted`);
         console.log(`  - trip_depos: soft deleted`);
         console.log(`  - pool: soft deleted and balances recalculated`);
-        
+
         // Show advance balance deletion details
         if (advanceDeletionSummary.length > 0) {
             console.log(`  - advance_balance: soft deleted and balances recalculated`);
@@ -2427,7 +2427,7 @@ exports.deleteTrip = async (req, res) => {
                 console.log(`    • ${del.depoName} (ID: ${del.depoId}): Balance ${del.balanceBefore} → ${del.balanceAfter} (Deleted: Debit=${del.deletedDebit}, Credit=${del.deletedCredit})`);
             });
         }
-        
+
         console.log(`  - payments: soft deleted`);
         console.log(`  - recoveries: soft deleted`);
         console.log(`  - vehicle_rents: soft deleted`);
@@ -2435,8 +2435,8 @@ exports.deleteTrip = async (req, res) => {
         console.log(`  - cash_in_hand: soft deleted and balances recalculated`);
         console.log(`  - accounts: balances restored (accounts remain active)`);
         console.log(`==========================================\n`);
-        
-        res.json({ 
+
+        res.json({
             message: 'Trip and all related records soft deleted successfully',
             deleted: {
                 trip: true,
@@ -2461,10 +2461,10 @@ exports.deleteTrip = async (req, res) => {
             sqlState: err.sqlState,
             errno: err.errno
         });
-        res.status(500).json({ 
-            message: 'Server Error', 
+        res.status(500).json({
+            message: 'Server Error',
             error: err.message,
-            sqlMessage: err.sqlMessage 
+            sqlMessage: err.sqlMessage
         });
     }
 };
@@ -2473,7 +2473,7 @@ exports.deleteTrip = async (req, res) => {
 exports.getDepoRemainingAmount = async (req, res) => {
     try {
         const depoId = req.query.depoId;
-        
+
         if (!depoId) {
             return res.status(400).json({ message: 'Depo ID is required' });
         }
@@ -2483,14 +2483,14 @@ exports.getDepoRemainingAmount = async (req, res) => {
             `SELECT Balance, previous_payables FROM depo WHERE id = ? AND active = 1`,
             [depoId]
         );
-        
+
         if (depoRows.length === 0) {
             return res.status(404).json({ message: 'Depo not found' });
         }
-        
+
         const depoBalance = parseFloat(depoRows[0].Balance || 0);
         const previousPayables = parseFloat(depoRows[0].previous_payables || 0) || 0;
-        
+
         // Advance balance is stored in advance_balance table (latest Balance)
         const [advanceRows] = await db.execute(
             `SELECT COALESCE(Balance, 0) as advance_balance
@@ -2501,7 +2501,7 @@ exports.getDepoRemainingAmount = async (req, res) => {
             [depoId]
         );
         const advanceBalance = parseFloat(advanceRows[0]?.advance_balance || 0);
-        
+
         // Get the latest pool DepoLimit (this is the authoritative source for credit limit)
         // Pool table is updated when recoveries/payments are added, so it's always current
         const [latestPoolRows] = await db.execute(
@@ -2512,12 +2512,12 @@ exports.getDepoRemainingAmount = async (req, res) => {
              LIMIT 1`,
             [depoId]
         );
-        
+
         // Use pool DepoLimit as source of truth, fallback to depo.Balance if no pool entries exist
         const currentPoolLimit = latestPoolRows.length > 0
             ? parseFloat(latestPoolRows[0].DepoLimit || 0)
             : depoBalance;
-        
+
         // Log for debugging if there's a mismatch between pool and depo table
         if (latestPoolRows.length > 0) {
             const poolDepoLimit = parseFloat(latestPoolRows[0].DepoLimit || 0);
@@ -2525,7 +2525,7 @@ exports.getDepoRemainingAmount = async (req, res) => {
                 console.log(`Warning: depo.Balance (${depoBalance}) != pool DepoLimit (${poolDepoLimit}) for depo ${depoId}. Using pool DepoLimit.`);
             }
         }
-        
+
         // Calculate remaining amount from trip_depos (amount owed from trips)
         const [remainingBalanceRows] = await db.execute(
             `SELECT COALESCE(SUM(payable_amount - COALESCE(paid_amount, 0)), 0) as remaining_balance
@@ -2535,22 +2535,22 @@ exports.getDepoRemainingAmount = async (req, res) => {
                AND (payable_amount - COALESCE(paid_amount, 0)) > 0`,
             [depoId]
         );
-        
+
         const tripRemainingAmount = parseFloat(remainingBalanceRows[0]?.remaining_balance || 0);
-        
+
         // Total remaining amount = previous_payables + trip payables
         // Since payments are applied to previous_payables first, then to trips,
         // the total payable is: current previous_payables + trip payables
         const remainingAmount = previousPayables + tripRemainingAmount;
-        
+
         // Total available funds for new product purchases:
         // - credit side: currentPoolLimit
         // - advance side: advanceBalance
         const totalAvailable = advanceBalance + currentPoolLimit;
-        
+
         console.log(`Depo ${depoId}: PreviousPayables=${previousPayables}, TripRemainingAmount=${tripRemainingAmount}, TotalRemainingAmount=${remainingAmount}, AdvanceBalance=${advanceBalance}, CreditBalance=${currentPoolLimit}, TotalAvailable=${totalAvailable}`);
-        
-        res.json({ 
+
+        res.json({
             remainingAmount: remainingAmount,
             previousPayables: previousPayables,
             tripRemainingAmount: tripRemainingAmount,
@@ -2561,9 +2561,9 @@ exports.getDepoRemainingAmount = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching depo remaining amount:', err);
-        res.status(500).json({ 
-            message: 'Server Error', 
-            error: err.message 
+        res.status(500).json({
+            message: 'Server Error',
+            error: err.message
         });
     }
 };
@@ -2584,10 +2584,10 @@ exports.getClients = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
+            res.status(500).json({
+                message: 'Server Error',
                 error: err.message,
-                sqlMessage: err.sqlMessage 
+                sqlMessage: err.sqlMessage
             });
         }
     }
@@ -2620,7 +2620,7 @@ exports.getTodayPolSales = async (req, res) => {
             WHERE ps.Active = 1
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query);
         res.json(rows);
     } catch (err) {
@@ -2628,9 +2628,9 @@ exports.getTodayPolSales = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }
@@ -2946,7 +2946,7 @@ exports.getPetrolPumps = async (req, res) => {
 exports.getSoldFuelForTrip = async (req, res) => {
     try {
         const trip_id = req.query.trip_id;
-        
+
         if (!trip_id) {
             return res.status(400).json({ message: 'Trip ID is required' });
         }
@@ -2957,17 +2957,17 @@ exports.getSoldFuelForTrip = async (req, res) => {
             FROM pol_sale
             WHERE trip_id = ? AND Active = 1
         `;
-        
+
         const [rows] = await db.execute(query, [trip_id]);
         const totalSold = rows[0]?.total_sold || 0;
-        
+
         // Get trip fuel capacity
         const tripQuery = `SELECT fuel FROM trips WHERE id = ?`;
         const [tripRows] = await db.execute(tripQuery, [trip_id]);
         const tripFuel = tripRows[0]?.fuel || 0;
-        
+
         const availableFuel = Number(tripFuel) - Number(totalSold);
-        
+
         res.json({
             trip_id: parseInt(trip_id),
             total_fuel: Number(tripFuel),
@@ -2976,9 +2976,9 @@ exports.getSoldFuelForTrip = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching sold fuel:', err);
-        res.status(500).json({ 
-            message: 'Server Error', 
-            error: err.message 
+        res.status(500).json({
+            message: 'Server Error',
+            error: err.message
         });
     }
 };
@@ -3011,7 +3011,7 @@ exports.getTripProducts = async (req, res) => {
             WHERE tp.trip_id = ? AND tp.active = 1
             ORDER BY tp.product_type, d.name
         `;
-        
+
         const [rows] = await db.execute(query, [trip_id]);
         res.json(rows);
     } catch (err) {
@@ -3067,7 +3067,7 @@ exports.getTripProductDetails = async (req, res) => {
                      END,
                      tp.id
         `;
-        
+
         const [rows] = await db.execute(query, [trip_id]);
         res.json(rows);
     } catch (err) {
@@ -3081,9 +3081,9 @@ exports.addSale = async (req, res) => {
     const connection = await db.getConnection();
     try {
         await connection.beginTransaction();
-        
+
         console.log('Received sale data:', req.body);
-        
+
         const {
             trip_id,
             trip_product_id,
@@ -3101,8 +3101,8 @@ exports.addSale = async (req, res) => {
 
         // Validate required fields
         if (!trip_id || !trip_product_id || !client_id || !fuel || !rate || !date || !total_amount) {
-            return res.status(400).json({ 
-                message: 'Missing required fields: trip_id, trip_product_id, client_id, fuel, rate, total_amount, and date are required' 
+            return res.status(400).json({
+                message: 'Missing required fields: trip_id, trip_product_id, client_id, fuel, rate, total_amount, and date are required'
             });
         }
 
@@ -3111,19 +3111,19 @@ exports.addSale = async (req, res) => {
             'SELECT *, COALESCE(qty_sold, 0) as qty_sold FROM trip_products WHERE id = ? AND active = 1',
             [trip_product_id]
         );
-        
+
         if (tripProductRows.length === 0) {
             await connection.rollback();
             return res.status(404).json({ message: 'Trip product not found or inactive' });
         }
-        
+
         const tripProduct = tripProductRows[0];
-        
+
         // Check available quantity for this trip product using qty_sold
         const currentQtySold = Number(tripProduct.qty_sold || 0);
         const availableQuantity = Number(tripProduct.quantity_ltr) - currentQtySold;
         const requestedFuel = Number(fuel);
-        
+
         // Validate quantity availability
         if (requestedFuel > availableQuantity) {
             await connection.rollback();
@@ -3133,7 +3133,7 @@ exports.addSale = async (req, res) => {
                 requested_fuel: requestedFuel
             });
         }
-        
+
         // Validate Qty is not zero
         const qty = Number(Qty) || 0;
         if (qty <= 0) {
@@ -3142,7 +3142,7 @@ exports.addSale = async (req, res) => {
                 message: 'Quantity (Qty) must be greater than zero'
             });
         }
-        
+
         // For Mobile/Lube Oil, validate Qty doesn't exceed available
         if (tripProduct.product_type === 'Mobile/Lube Oil') {
             if (container_type === 'Cotton') {
@@ -3179,7 +3179,7 @@ exports.addSale = async (req, res) => {
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW(), ?)
         `;
-        
+
         // Get CB (Created By) from request body, default to 'System' if not provided
         const CB = req.body.CB || 'System';
 
@@ -3197,13 +3197,13 @@ exports.addSale = async (req, res) => {
             date,
             CB
         ];
-        
+
         console.log('Add Sale - Query parameters:', JSON.stringify(queryParams, null, 2));
 
         const [result] = await connection.execute(insertQuery, queryParams);
-        
+
         console.log('Sale added successfully with ID:', result.insertId);
-        
+
         // Update trip_products qty_sold (add sold amount to qty_sold)
         const newQtySold = currentQtySold + requestedFuel;
         await connection.execute(
@@ -3212,8 +3212,8 @@ exports.addSale = async (req, res) => {
              WHERE id = ? AND active = 1`,
             [newQtySold, trip_product_id]
         );
-        
-        // When customer type is Self: add fuel to fuel_tanks, create daily_tank_inventory record
+
+        // When customer type is Self: receive stock into tank and track it in daily_tank_inventory
         try {
             let isSelf = false;
             if (customer_type_id) {
@@ -3229,28 +3229,38 @@ exports.addSale = async (req, res) => {
                 const pump_id = client_id;
                 console.log(`[Tank Stock] Self sale: pump_id=${pump_id}, fuel=${requestedFuel}L`);
 
-                const [tripProductRows] = await connection.execute(
+                const [fuelProductRows] = await connection.execute(
                     `SELECT product_type FROM trip_products WHERE id = ? AND active = 1`,
                     [trip_product_id]
                 );
-                if (tripProductRows.length === 0) {
+                if (fuelProductRows.length === 0) {
                     console.log(`[Tank Stock] ✗ Trip product ${trip_product_id} not found`);
                 } else {
-                    const product_type = tripProductRows[0].product_type;
+                    const product_type = fuelProductRows[0].product_type;
                     let fuelTypeName = product_type;
                     if (product_type === 'Mobile/Lube Oil') fuelTypeName = 'Mobile Oil';
                     if (product_type === 'PMG') fuelTypeName = 'Petrol';
                     if (product_type === 'HSD') fuelTypeName = 'Diesel';
 
+                    const normalizedFuelType = String(fuelTypeName || '').trim().toLowerCase();
+                    let fuelAliases = [normalizedFuelType];
+                    if (normalizedFuelType === 'petrol') fuelAliases = ['petrol', 'pmg', 'ms'];
+                    if (normalizedFuelType === 'diesel') fuelAliases = ['diesel', 'hsd'];
+                    if (normalizedFuelType === 'mobile oil') fuelAliases = ['mobile oil', 'mobile/lube oil', 'lube oil'];
+
+                    const aliasPlaceholders = fuelAliases.map(() => '?').join(',');
                     const [tankRows] = await connection.execute(
                         `SELECT id, pump_id, fuel_type, capacity, current_level 
                          FROM fuel_tanks 
-                         WHERE pump_id = ? AND fuel_type = ? AND (Active = 1 OR Active IS NULL)
-                         LIMIT 1`,
-                        [pump_id, fuelTypeName]
+                         WHERE pump_id = ?
+                           AND LOWER(TRIM(fuel_type)) IN (${aliasPlaceholders})
+                           AND (Active = 1 OR Active IS NULL)
+                         ORDER BY CASE WHEN LOWER(TRIM(fuel_type)) = ? THEN 0 ELSE 1 END, id ASC
+                         LIMIT 1 FOR UPDATE`,
+                        [pump_id, ...fuelAliases, normalizedFuelType]
                     );
                     if (tankRows.length === 0) {
-                        console.log(`[Tank Stock] ✗ No fuel_tank found for pump_id=${pump_id}, fuel_type=${fuelTypeName}`);
+                        throw new Error(`[Tank Stock] No fuel_tank found for pump_id=${pump_id}, fuel_type=${fuelTypeName}`);
                     } else {
                         const tank = tankRows[0];
                         const tank_id = tank.id;
@@ -3258,12 +3268,17 @@ exports.addSale = async (req, res) => {
                         const closing_level = opening_level + requestedFuel;
                         const capacityVal = parseFloat(tank.capacity || 0);
                         if (capacityVal > 0 && closing_level > capacityVal) {
-                            console.log(`[Tank Stock] ✗ Tank capacity exceeded: ${closing_level}L > ${capacityVal}L`);
+                            throw new Error(`[Tank Stock] Tank capacity exceeded: ${closing_level}L > ${capacityVal}L`);
                         } else {
-                            await connection.execute(
-                                `UPDATE fuel_tanks SET current_level = ?, MD = NOW() WHERE id = ?`,
-                                [closing_level, tank_id]
+                            const [tankUpdateResult] = await connection.execute(
+                                `UPDATE fuel_tanks
+                                 SET current_level = ?, MB = ?, MD = NOW()
+                                 WHERE id = ? AND pump_id = ? AND (Active = 1 OR Active IS NULL)`,
+                                [closing_level, CB, tank_id, pump_id]
                             );
+                            if (!tankUpdateResult || tankUpdateResult.affectedRows === 0) {
+                                throw new Error(`[Tank Stock] Failed to update fuel_tanks for pump_id=${pump_id}, tank_id=${tank_id}`);
+                            }
                             console.log(`[Tank Stock] ✓ fuel_tanks.current_level updated: ${opening_level}L + ${requestedFuel}L = ${closing_level}L`);
 
                             const saleDate = date || new Date().toISOString().split('T')[0];
@@ -3282,26 +3297,61 @@ exports.addSale = async (req, res) => {
                                 );
                                 dailyEntryId = dseIns.insertId;
                             }
-                            const purchase_reference = `POL-${result.insertId}`;
-                            await connection.execute(
-                                `INSERT INTO daily_tank_inventory (daily_entry_id, tank_id, opening_level, closing_level, received_quantity, sold_quantity, purchase_reference, cd, md, CB, MB, Active)
-                                 VALUES (?, ?, ?, ?, ?, 0, ?, NOW(), NOW(), ?, ?, 1)`,
-                                [dailyEntryId, tank_id, opening_level, closing_level, requestedFuel, purchase_reference, CB, CB]
+
+                            const [[tripRow]] = await connection.execute(
+                                `SELECT trip_no FROM trips WHERE id = ? LIMIT 1`,
+                                [trip_id]
                             );
-                            console.log(`[Tank Stock] ✓ daily_tank_inventory created, purchase_reference=${purchase_reference}`);
+                            const tripReference = tripRow?.trip_no ? `Trip#${tripRow.trip_no}` : `Trip#${trip_id}`;
+
+                            const [[existingInventory]] = await connection.execute(
+                                `SELECT id, received_quantity, purchase_reference
+                                 FROM daily_tank_inventory
+                                 WHERE daily_entry_id = ? AND tank_id = ? AND (Active = 1 OR Active IS NULL)
+                                 LIMIT 1`,
+                                [dailyEntryId, tank_id]
+                            );
+
+                            if (existingInventory && existingInventory.id) {
+                                const currentReceived = parseFloat(existingInventory.received_quantity || 0);
+                                const nextReceived = currentReceived + requestedFuel;
+                                const prevRef = String(existingInventory.purchase_reference || '').trim();
+                                const nextRef = prevRef
+                                    ? (prevRef.includes(tripReference) ? prevRef : `${prevRef}, ${tripReference}`)
+                                    : tripReference;
+
+                                await connection.execute(
+                                    `UPDATE daily_tank_inventory
+                                     SET received_quantity = ?,
+                                         purchase_reference = ?,
+                                         MB = ?,
+                                         md = NOW()
+                                     WHERE id = ?`,
+                                    [nextReceived, nextRef, CB, existingInventory.id]
+                                );
+                                console.log(`[Tank Stock] ✓ daily_tank_inventory updated: received_quantity=${nextReceived}, purchase_reference=${nextRef}`);
+                            } else {
+                                await connection.execute(
+                                    `INSERT INTO daily_tank_inventory (daily_entry_id, tank_id, opening_level, closing_level, received_quantity, sold_quantity, purchase_reference, cd, md, CB, MB, Active)
+                                     VALUES (?, ?, ?, ?, ?, 0, ?, NOW(), NOW(), ?, ?, 1)`,
+                                    [dailyEntryId, tank_id, null, null, requestedFuel, tripReference, CB, CB]
+                                );
+                                console.log(`[Tank Stock] ✓ daily_tank_inventory created, purchase_reference=${tripReference}`);
+                            }
                         }
                     }
                 }
             }
         } catch (tankStockError) {
             console.error('[Tank Stock] ✗ ERROR:', tankStockError);
+            throw tankStockError;
         }
-        
+
         // Check if trip should be closed (all payments cleared and all fuel sold)
         await checkAndCloseTrip(connection, trip_id);
-        
+
         await connection.commit();
-        
+
         res.json({
             message: 'Sale added successfully',
             id: result.insertId
@@ -3316,14 +3366,14 @@ exports.addSale = async (req, res) => {
             errno: err.errno
         });
         if (err.code === 'ER_NO_SUCH_TABLE') {
-            res.status(500).json({ 
+            res.status(500).json({
                 message: 'pol_sale table does not exist. Please create the table first.',
                 error: err.message,
                 sqlMessage: err.sqlMessage
             });
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
+            res.status(500).json({
+                message: 'Server Error',
                 error: err.message,
                 sqlMessage: err.sqlMessage,
                 code: err.code
@@ -3361,7 +3411,7 @@ exports.getTodayPolSales = async (req, res) => {
             WHERE ps.Active = 1
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query);
         res.json(rows);
     } catch (err) {
@@ -3369,9 +3419,9 @@ exports.getTodayPolSales = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }
@@ -3381,7 +3431,7 @@ exports.getTodayPolSales = async (req, res) => {
 exports.getTripDistribution = async (req, res) => {
     try {
         const trip_id = req.query.trip_id;
-        
+
         if (!trip_id) {
             return res.status(400).json({ message: 'Trip ID is required' });
         }
@@ -3412,7 +3462,7 @@ exports.getTripDistribution = async (req, res) => {
             WHERE ps.trip_id = ? AND ps.Active = 1
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query, [trip_id]);
         res.json(rows);
     } catch (err) {
@@ -3420,9 +3470,9 @@ exports.getTripDistribution = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }
@@ -3455,7 +3505,7 @@ exports.getTodayPolSales = async (req, res) => {
             WHERE ps.Active = 1
             ORDER BY ps.date DESC, ps.id DESC
         `;
-        
+
         const [rows] = await db.execute(query);
         res.json(rows);
     } catch (err) {
@@ -3463,9 +3513,9 @@ exports.getTodayPolSales = async (req, res) => {
         if (err.code === 'ER_NO_SUCH_TABLE') {
             res.json([]);
         } else {
-            res.status(500).json({ 
-                message: 'Server Error', 
-                error: err.message 
+            res.status(500).json({
+                message: 'Server Error',
+                error: err.message
             });
         }
     }

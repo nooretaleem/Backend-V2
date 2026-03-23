@@ -85,7 +85,10 @@ exports.addUser = async (req, res) => {
     const name = req.body.name;
     const email = req.body.email;
     const password = req.body.password;
-    const role = req.body.role;
+    const role = Number(req.body.role);
+    const CB = req.body.CB || 'System';
+    const createStaffRecord = req.body.createStaffRecord === true;
+    let conn;
 
     console.log(name + ' ' + email + ' ' + password + ' ' + role);
     try {
@@ -99,22 +102,65 @@ exports.addUser = async (req, res) => {
             res.status(409).json({ message: 'User with the given Email already exists' });
         }
         else {
-            hashPassword(password).then(async (hash) => {
-                //console.log(hash); // the hashed password is available here
-                const [result] = await db.execute(
-                    'INSERT INTO users (name, password, email,roleid) VALUES (?, ?, ?,?)',
-                    [name, hash, email, role]
-                );
+            const hash = await hashPassword(password);
+            conn = await db.getConnection();
+            await conn.beginTransaction();
 
-                res.status(200).json({ message: 'Inserted successfully.' });
-            }).catch((err) => {
-                console.error(err);
+            const [[roleRow]] = await conn.execute(
+                'SELECT roletype FROM roles WHERE id = ? LIMIT 1',
+                [role]
+            );
+            const roleName = roleRow?.roletype || null;
+
+            const [result] = await conn.execute(
+                'INSERT INTO users (name, password, email, roleid, CB) VALUES (?, ?, ?, ?, ?)',
+                [name, hash, email, role, CB]
+            );
+
+            let staffId = null;
+            if (createStaffRecord) {
+                const designation = String(roleName || 'Staff').trim() || 'Staff';
+                const codePrefix = designation.toLowerCase().includes('manager') ? 'MGR' : 'STF';
+                const staffCode = `${codePrefix}-${result.insertId}`;
+
+                const [staffResult] = await conn.execute(
+                    `INSERT INTO staff (
+                        staffCode, name, phone, designation, employmentType,
+                        joiningDate, user_id, pump_id, cnic, salary,
+                        Active, CB, CD, MB, MD
+                    ) VALUES (?, ?, ?, ?, ?, CURDATE(), ?, NULL, NULL, NULL, 1, ?, NOW(), ?, NOW())`,
+                    [staffCode, name, '', designation, 'Permanent', result.insertId, CB, CB]
+                );
+                staffId = staffResult.insertId;
+            }
+
+            await conn.commit();
+
+            res.status(200).json({
+                message: 'Inserted successfully.',
+                user: {
+                    id: result.insertId,
+                    name,
+                    email,
+                    roleid: role,
+                    role: roleName
+                },
+                staffId
             });
         }
 
     } catch (err) {
+        if (conn) {
+            try {
+                await conn.rollback();
+            } catch (rollbackErr) {
+                console.error(rollbackErr);
+            }
+        }
         console.error(err);
         res.status(500).json({ message: 'Server Error' });
+    } finally {
+        if (conn) conn.release();
     }
 };
 exports.updateUser = async (req, res) => {

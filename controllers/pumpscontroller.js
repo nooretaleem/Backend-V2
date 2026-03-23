@@ -1,5 +1,44 @@
 const db = require('../models/db');
 
+exports.getTankTypes = async (req, res) => {
+  try {
+    let rows = [];
+    try {
+      const [resultRows] = await db.execute(
+        `SELECT id, total_capacity_liters, max_dip_mm
+         FROM tank_types
+         WHERE Active = 1
+         ORDER BY total_capacity_liters`
+      );
+      rows = resultRows || [];
+    } catch (queryErr) {
+      if (queryErr.code !== 'ER_BAD_FIELD_ERROR') {
+        throw queryErr;
+      }
+
+      const [fallbackRows] = await db.execute(
+        `SELECT id, fuel_type, total_capacity_liters, max_dip_mm
+         FROM tank_types
+         ORDER BY total_capacity_liters`
+      );
+      rows = fallbackRows || [];
+    }
+
+    res.json(rows.map((row) => ({
+      id: Number(row.id),
+      fuel_type: row.fuel_type || '',
+      total_capacity_liters: Number(row.total_capacity_liters) || 0,
+      max_dip_mm: Number(row.max_dip_mm) || 0
+    })));
+  } catch (err) {
+    console.error('Error fetching tank types:', err);
+    if (err.code === 'ER_NO_SUCH_TABLE') {
+      return res.json([]);
+    }
+    res.status(500).json({ message: 'Server Error', error: err.message });
+  }
+};
+
 exports.getPumps = async (req, res) => {
   try {
     const query = `
@@ -80,7 +119,7 @@ exports.getPumpDetails = async (req, res) => {
       return res.status(400).json({ message: 'Pump ID is required' });
     }
 
-    const [[pumpRows], [tankRows], [machineRows], [nozzleRows]] = await Promise.all([
+    const [[pumpRows], [tankRows], [machineRows], [nozzleRows], [staffRows]] = await Promise.all([
       db.execute(
         `SELECT 
            pp.*,
@@ -92,8 +131,11 @@ exports.getPumpDetails = async (req, res) => {
         [id]
       ),
       db.execute(
-        `SELECT * 
-         FROM fuel_tanks 
+        `SELECT 
+           ft.*, 
+           tt.total_capacity_liters
+         FROM fuel_tanks ft
+         LEFT JOIN tank_types tt ON ft.tank_type_id = tt.id
          WHERE pump_id = ? 
          ORDER BY fuel_type, tank_number`,
         [id]
@@ -112,7 +154,14 @@ exports.getPumpDetails = async (req, res) => {
          WHERE mc.pump_id = ?
          ORDER BY mc.machine_number, nz.nozzle_number`,
         [id]
-      )
+      ),
+      db.execute(
+        `SELECT ps.staffid, s.name, s.phone, s.designation
+         FROM pump_staff ps
+         JOIN staff s ON s.id = ps.staffid
+         WHERE ps.pumpid = ? AND ps.Active = 1`,
+        [id]
+      ).catch(() => [[]])
     ]);
 
     if (!pumpRows || pumpRows.length === 0) {
@@ -125,8 +174,9 @@ exports.getPumpDetails = async (req, res) => {
       ...mc,
       nozzles: (nozzleRows || []).filter((nz) => nz.machine_id === mc.id)
     }));
+    const staff = staffRows || [];
 
-    res.json({ pump, tanks, machines });
+    res.json({ pump, tanks, machines, staff });
   } catch (err) {
     console.error('Error fetching pump details:', err);
     res.status(500).json({ message: 'Server Error', error: err.message });
@@ -163,11 +213,12 @@ exports.createPump = async (req, res) => {
     for (const t of tanks) {
       await conn.execute(
         `INSERT INTO fuel_tanks (
-           pump_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
+           pump_id, tank_type_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
            Active, CB, CD, MB, MD
-         ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())`,
         [
           pumpId,
+          t.tank_type_id != null ? Number(t.tank_type_id) : null,
           t.fuel_type || null,
           t.capacity != null ? t.capacity : null,
           t.current_level != null ? t.current_level : 0,
@@ -220,6 +271,19 @@ exports.createPump = async (req, res) => {
             CB
           ]
         );
+      }
+    }
+
+    // Insert pump_staff assignments
+    const staffIds = Array.isArray(payload.staffIds) ? payload.staffIds.map(Number).filter(Boolean) : [];
+    for (const staffId of staffIds) {
+      try {
+        await conn.execute(
+          `INSERT INTO pump_staff (pumpid, staffid, Active, CB, CD, MB, MD) VALUES (?, ?, 1, ?, NOW(), ?, NOW())`,
+          [pumpId, staffId, CB, CB]
+        );
+      } catch (staffErr) {
+        if (staffErr.code !== 'ER_NO_SUCH_TABLE') throw staffErr;
       }
     }
 
@@ -371,6 +435,7 @@ exports.updatePump = async (req, res) => {
           // Update existing tank
           await conn.execute(
             `UPDATE fuel_tanks SET
+               tank_type_id = ?,
                capacity = ?,
                current_level = ?,
                low_alert_level = ?,
@@ -379,6 +444,7 @@ exports.updatePump = async (req, res) => {
                MD = NOW()
              WHERE id = ?`,
             [
+              t.tank_type_id != null ? Number(t.tank_type_id) : null,
               t.capacity != null ? t.capacity : null,
               t.current_level != null ? t.current_level : 0,
               t.low_alert_level != null ? t.low_alert_level : 0,
@@ -405,11 +471,12 @@ exports.updatePump = async (req, res) => {
           try {
             await conn.execute(
               `INSERT INTO fuel_tanks (
-                 pump_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
+                 pump_id, tank_type_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
                  Active, CB, CD, MB, MD
-               ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())`,
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())`,
               [
                 pumpId,
+                t.tank_type_id != null ? Number(t.tank_type_id) : null,
                 t.fuel_type || null,
                 t.capacity != null ? t.capacity : null,
                 t.current_level != null ? t.current_level : 0,
@@ -433,11 +500,12 @@ exports.updatePump = async (req, res) => {
                 // Retry insert
                 await conn.execute(
                   `INSERT INTO fuel_tanks (
-                     pump_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
+                     pump_id, tank_type_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
                      Active, CB, CD, MB, MD
-                   ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())`,
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())`,
                   [
                     pumpId,
+                    t.tank_type_id != null ? Number(t.tank_type_id) : null,
                     t.fuel_type || null,
                     t.capacity != null ? t.capacity : null,
                     t.current_level != null ? t.current_level : 0,
@@ -784,6 +852,40 @@ exports.updatePump = async (req, res) => {
       }
     }
 
+    // Differential update pump_staff
+    if (payload.staffIds !== undefined) {
+      const newStaffIds = (Array.isArray(payload.staffIds) ? payload.staffIds : []).map(Number).filter(Boolean);
+      try {
+        const [existingStaff] = await conn.execute(
+          `SELECT staffid FROM pump_staff WHERE pumpid = ? AND Active = 1`,
+          [pumpId]
+        );
+        const existingIds = (existingStaff || []).map(r => Number(r.staffid));
+
+        // Deactivate removed staff
+        for (const existId of existingIds) {
+          if (!newStaffIds.includes(existId)) {
+            await conn.execute(
+              `UPDATE pump_staff SET Active = 0, MD = NOW(), MB = ? WHERE pumpid = ? AND staffid = ?`,
+              [MB, pumpId, existId]
+            );
+          }
+        }
+
+        // Insert newly added staff
+        for (const newId of newStaffIds) {
+          if (!existingIds.includes(newId)) {
+            await conn.execute(
+              `INSERT INTO pump_staff (pumpid, staffid, Active, CB, CD, MB, MD) VALUES (?, ?, 1, ?, NOW(), ?, NOW())`,
+              [pumpId, newId, MB, MB]
+            );
+          }
+        }
+      } catch (staffErr) {
+        if (staffErr.code !== 'ER_NO_SUCH_TABLE') throw staffErr;
+      }
+    }
+
     await conn.commit();
 
     res.json({
@@ -985,7 +1087,27 @@ exports.getDipVolumeByType = async (req, res) => {
     const upper = upperRows && upperRows[0] ? upperRows[0] : null;
 
     if (!lower && !upper) {
-      return res.status(404).json({ message: 'No dip chart data found for this tank type' });
+      // Fall back to linear interpolation using tank_types metadata
+      const [typeRows] = await db.execute(
+        `SELECT total_capacity_liters, max_dip_mm FROM tank_types WHERE id = ? LIMIT 1`,
+        [tankTypeId]
+      );
+      if (!typeRows || typeRows.length === 0) {
+        return res.status(404).json({ message: 'No dip chart data found for this tank type' });
+      }
+      const maxDip = parseFloat(typeRows[0].max_dip_mm) || 0;
+      const maxCapacity = parseFloat(typeRows[0].total_capacity_liters) || 0;
+      if (maxDip <= 0 || maxCapacity <= 0) {
+        return res.status(404).json({ message: 'No dip chart data found for this tank type' });
+      }
+      const clampedDip = Math.min(dipMm, maxDip);
+      const estimated = Math.round(((clampedDip / maxDip) * maxCapacity) * 100) / 100;
+      return res.json({
+        tank_type_id: tankTypeId,
+        dip_mm: dipMm,
+        volume_liters: estimated,
+        source: 'estimated'
+      });
     }
 
     if (lower && upper) {
@@ -1023,6 +1145,27 @@ exports.getDipVolumeByType = async (req, res) => {
   } catch (err) {
     console.error('Error fetching dip chart volume:', err);
     if (err.code === 'ER_NO_SUCH_TABLE') {
+      // dip_chart doesn't exist — fall back to linear estimate from tank_types
+      try {
+        const [typeRows] = await db.execute(
+          `SELECT total_capacity_liters, max_dip_mm FROM tank_types WHERE id = ? LIMIT 1`,
+          [tankTypeId]
+        );
+        if (typeRows && typeRows.length > 0) {
+          const maxDip = parseFloat(typeRows[0].max_dip_mm) || 0;
+          const maxCapacity = parseFloat(typeRows[0].total_capacity_liters) || 0;
+          if (maxDip > 0 && maxCapacity > 0) {
+            const clampedDip = Math.min(dipMm, maxDip);
+            const estimated = Math.round(((clampedDip / maxDip) * maxCapacity) * 100) / 100;
+            return res.json({
+              tank_type_id: tankTypeId,
+              dip_mm: dipMm,
+              volume_liters: estimated,
+              source: 'estimated'
+            });
+          }
+        }
+      } catch (_) { /* ignore fallback error */ }
       return res.status(500).json({ message: 'dip_chart table not found' });
     }
     res.status(500).json({ message: 'Server Error', error: err.message });
@@ -1043,22 +1186,47 @@ exports.checkTodayDipReadings = async (req, res) => {
       return res.status(400).json({ message: 'pump_id and entry_date are required' });
     }
 
-    const [rows] = await db.execute(
-      `SELECT pdr.daily_entry_id AS id
-       FROM physical_dip_readings pdr
-       INNER JOIN daily_sales_entries dse ON dse.id = pdr.daily_entry_id
-       WHERE dse.pump_id = ?
-         AND dse.Active = 1
-         AND pdr.Active = 1
-         AND DATE(pdr.reading_time) = ?
+    const [[entryRow]] = await db.execute(
+      `SELECT id
+       FROM daily_sales_entries
+       WHERE pump_id = ?
+         AND entry_date = ?
+         AND Active = 1
        LIMIT 1`,
       [pumpId, entryDate]
     );
 
-    if (rows && rows.length > 0) {
-      return res.json({ hasDipReadings: true, daily_entry_id: rows[0].id });
+    if (!entryRow || !entryRow.id) {
+      return res.json({
+        hasDipReadings: false,
+        daily_entry_id: null,
+        opening_saved: false,
+        closing_saved: false,
+        mode: 'opening'
+      });
     }
-    return res.json({ hasDipReadings: false, daily_entry_id: null });
+
+    const dailyEntryId = entryRow.id;
+    const [[inventoryStats]] = await db.execute(
+      `SELECT
+         SUM(CASE WHEN opening_level IS NOT NULL THEN 1 ELSE 0 END) AS opening_count,
+         SUM(CASE WHEN closing_level IS NOT NULL THEN 1 ELSE 0 END) AS closing_count
+       FROM daily_tank_inventory
+       WHERE daily_entry_id = ?
+         AND Active = 1`,
+      [dailyEntryId]
+    );
+
+    const openingSaved = Number(inventoryStats?.opening_count || 0) > 0;
+    const closingSaved = Number(inventoryStats?.closing_count || 0) > 0;
+
+    return res.json({
+      hasDipReadings: openingSaved,
+      daily_entry_id: dailyEntryId,
+      opening_saved: openingSaved,
+      closing_saved: closingSaved,
+      mode: openingSaved ? 'closing' : 'opening'
+    });
   } catch (err) {
     console.error('Error checking dip readings:', err);
     res.status(500).json({ message: 'Server Error', error: err.message });
@@ -1079,6 +1247,7 @@ exports.saveDipReadings = async (req, res) => {
     const pumpId = body.pump_id;
     const entryDate = body.entry_date;
     const readings = body.readings || [];
+    const readingType = String(body.reading_type || 'opening').toLowerCase() === 'closing' ? 'closing' : 'opening';
     const cb = (body.CB && String(body.CB).trim()) ? String(body.CB).trim()
       : (body.username && String(body.username).trim()) ? String(body.username).trim()
         : 'System';
@@ -1090,6 +1259,15 @@ exports.saveDipReadings = async (req, res) => {
     }
     if (!readings || readings.length === 0) {
       return res.status(400).json({ message: 'No readings provided' });
+    }
+
+    // Ensure stock_variance column exists (safe to run on every save)
+    try {
+      await connection.execute(
+        `ALTER TABLE daily_tank_inventory ADD COLUMN stock_variance DECIMAL(12,4) DEFAULT NULL`
+      );
+    } catch (colErr) {
+      if (colErr.code !== 'ER_DUP_FIELDNAME') throw colErr;
     }
 
     await connection.beginTransaction();
@@ -1114,17 +1292,7 @@ exports.saveDipReadings = async (req, res) => {
     }
     const dailyEntryId = entryRow.id;
 
-    // 2. Remove existing dip readings and tank inventory rows for this daily entry (allow re-save)
-    await connection.execute(
-      `DELETE FROM physical_dip_readings WHERE daily_entry_id = ?`,
-      [dailyEntryId]
-    );
-    await connection.execute(
-      `DELETE FROM daily_tank_inventory WHERE daily_entry_id = ?`,
-      [dailyEntryId]
-    );
-
-    // 3. Insert each tank reading and update fuel_tanks.current_level
+    // 2. Insert each tank reading and update fuel_tanks.current_level
     let primaryKeyFixed = false;
     for (const r of readings) {
       try {
@@ -1132,7 +1300,15 @@ exports.saveDipReadings = async (req, res) => {
           `INSERT INTO physical_dip_readings
              (daily_entry_id, tank_id, dip_level, volume_liters, reading_time, Active, CB, MB, CD, MD)
            VALUES (?, ?, ?, ?, ?, 1, ?, ?, NOW(), NOW())`,
-          [dailyEntryId, r.tank_id, r.dip_mm, r.volume_liters || 0, entryDate, cb, mb]
+          [
+            dailyEntryId,
+            r.tank_id,
+            r.dip_mm,
+            r.volume_liters || 0,
+            `${entryDate} ${new Date().toTimeString().slice(0, 8)}`,
+            cb,
+            mb
+          ]
         );
       } catch (insertErr) {
         const isPrimaryZeroDuplicate = insertErr &&
@@ -1156,27 +1332,78 @@ exports.saveDipReadings = async (req, res) => {
           `INSERT INTO physical_dip_readings
              (daily_entry_id, tank_id, dip_level, volume_liters, reading_time, Active, CB, MB, CD, MD)
            VALUES (?, ?, ?, ?, ?, 1, ?, ?, NOW(), NOW())`,
-          [dailyEntryId, r.tank_id, r.dip_mm, r.volume_liters || 0, entryDate, cb, mb]
+          [
+            dailyEntryId,
+            r.tank_id,
+            r.dip_mm,
+            r.volume_liters || 0,
+            `${entryDate} ${new Date().toTimeString().slice(0, 8)}`,
+            cb,
+            mb
+          ]
         );
       }
 
-      // Insert opening snapshot into daily_tank_inventory
-      // closing_level, received_quantity, sold_quantity, purchase_reference left NULL — filled later
-      await connection.execute(
-        `INSERT INTO daily_tank_inventory
-           (daily_entry_id, tank_id, opening_level,
-            closing_level, received_quantity, sold_quantity, purchase_reference,
-            CB, MB, cd, md, Active)
-         VALUES (?, ?, ?,
-                 NULL, NULL, NULL, NULL,
-                 ?, ?, NOW(), NOW(), 1)`,
-        [dailyEntryId, r.tank_id, r.volume_liters || 0, cb, mb]
+      const [[existingInventory]] = await connection.execute(
+        `SELECT id, opening_level, received_quantity, sold_quantity
+         FROM daily_tank_inventory
+         WHERE daily_entry_id = ?
+           AND tank_id = ?
+           AND Active = 1
+         LIMIT 1`,
+        [dailyEntryId, r.tank_id]
       );
 
+      if (readingType === 'opening') {
+        if (existingInventory && existingInventory.id) {
+          await connection.execute(
+            `UPDATE daily_tank_inventory
+             SET opening_level = ?, MB = ?, md = NOW()
+             WHERE id = ?`,
+            [r.volume_liters || 0, mb, existingInventory.id]
+          );
+        } else {
+          await connection.execute(
+            `INSERT INTO daily_tank_inventory
+               (daily_entry_id, tank_id, opening_level,
+                closing_level, received_quantity, sold_quantity, purchase_reference,
+                CB, MB, cd, md, Active)
+             VALUES (?, ?, ?,
+                     NULL, NULL, NULL, NULL,
+                     ?, ?, NOW(), NOW(), 1)`,
+            [dailyEntryId, r.tank_id, r.volume_liters || 0, cb, mb]
+          );
+        }
+      } else {
+        if (!existingInventory || existingInventory.opening_level == null) {
+          throw new Error(`Opening reading not found for tank ${r.tank_id}. Save opening first.`);
+        }
+        const closingLevel = r.volume_liters || 0;
+        const openingLevel = Number(existingInventory.opening_level) || 0;
+        const receivedQty = Number(existingInventory.received_quantity) || 0;
+        const soldQty = Number(existingInventory.sold_quantity) || 0;
+        const stockVariance = (receivedQty + (openingLevel - closingLevel)) - soldQty;
+        await connection.execute(
+          `UPDATE daily_tank_inventory
+           SET closing_level = ?, stock_variance = ?, MB = ?, md = NOW()
+           WHERE id = ?`,
+          [closingLevel, stockVariance, mb, existingInventory.id]
+        );
+      }
+
       // Update current stock level in fuel_tanks
+      // Closing formula requested by user: (opening_level - closing_level) + received_quantity
+      const dipVolumeForTank = r.volume_liters || 0;
+      const receivedForTank = existingInventory ? (Number(existingInventory.received_quantity) || 0) : 0;
+      const openingForTank = existingInventory ? (Number(existingInventory.opening_level) || 0) : 0;
+      const newCurrentLevel = readingType === 'closing'
+        ? (openingForTank - dipVolumeForTank) + receivedForTank
+        : dipVolumeForTank + receivedForTank;
       await connection.execute(
-        `UPDATE fuel_tanks SET current_level = ?, MD = NOW() WHERE id = ? AND Active = 1`,
-        [r.volume_liters || 0, r.tank_id]
+        `UPDATE fuel_tanks
+         SET current_level = ?, MB = ?, MD = NOW()
+         WHERE pump_id = ? AND id = ? AND Active = 1`,
+        [newCurrentLevel, mb, pumpId, r.tank_id]
       );
     }
 
@@ -1186,7 +1413,7 @@ exports.saveDipReadings = async (req, res) => {
     return res.json({
       success: true,
       daily_entry_id: dailyEntryId,
-      message: `Dip readings saved successfully (${readings.length} tank${readings.length !== 1 ? 's' : ''})`
+      message: `${readingType === 'opening' ? 'Opening' : 'Closing'} dip readings saved successfully (${readings.length} tank${readings.length !== 1 ? 's' : ''})`
     });
   } catch (err) {
     if (connection) {
@@ -1194,6 +1421,9 @@ exports.saveDipReadings = async (req, res) => {
       connection.release();
     }
     console.error('Error saving dip readings:', err);
+    if (err && err.message && err.message.includes('Opening reading not found')) {
+      return res.status(400).json({ message: err.message });
+    }
     res.status(500).json({ message: 'Server Error', error: err.message });
   }
 };

@@ -37,6 +37,132 @@ function normalizeDateFormat(dateString) {
   return dateString;
 }
 
+function normalizeTankFuelKey(value) {
+  const key = String(value || '').trim().toLowerCase();
+  if (!key) return 'unknown';
+  if (key.includes('petrol') || key === 'pmg' || key === 'ms') return 'petrol';
+  if (key.includes('diesel') || key === 'hsd') return 'diesel';
+  if (key.includes('mobile') || key.includes('lube')) return 'mobileOil';
+  return 'unknown';
+}
+
+function getTankBaseLevel(row) {
+  const hasClosing = row.closing_level !== null && row.closing_level !== undefined;
+  const hasOpening = row.opening_level !== null && row.opening_level !== undefined;
+  const received = Number(row.received_quantity || 0);
+
+  if (hasClosing) {
+    return Number(row.closing_level || 0) + received;
+  }
+
+  if (hasOpening) {
+    return Number(row.opening_level || 0) + received;
+  }
+
+  // If no dip-based level exists, keep current tank level as the source of truth.
+  return Number(row.current_level || 0);
+}
+
+async function syncTankInventoryAndStockForDailyEntry(connection, {
+  dailyEntryId,
+  pumpId,
+  machines,
+  cb,
+  mb
+}) {
+  const soldByFuel = { petrol: 0, diesel: 0, mobileOil: 0 };
+
+  for (const machine of machines || []) {
+    for (const nozzle of machine.nozzles || []) {
+      const sold = Math.max(Number(nozzle?.digital?.sold || 0), Number(nozzle?.mechanical?.sold || 0));
+      const fuelKey = normalizeTankFuelKey(nozzle.nozzle_type || nozzle.fuelType || machine.fuelType || 'Petrol');
+      if (fuelKey === 'petrol') soldByFuel.petrol += sold;
+      if (fuelKey === 'diesel') soldByFuel.diesel += sold;
+      if (fuelKey === 'mobileOil') soldByFuel.mobileOil += sold;
+    }
+  }
+
+  const [tankRows] = await connection.execute(
+    `SELECT
+        ft.id AS tank_id,
+        ft.pump_id,
+        ft.fuel_type,
+        ft.current_level,
+        ft.tank_number,
+        dti.id AS inventory_id,
+        dti.opening_level,
+        dti.closing_level,
+        dti.received_quantity,
+        dti.purchase_reference
+     FROM fuel_tanks ft
+     LEFT JOIN daily_tank_inventory dti
+       ON dti.daily_entry_id = ?
+      AND dti.tank_id = ft.id
+      AND dti.Active = 1
+     WHERE ft.pump_id = ?
+       AND ft.Active = 1
+     ORDER BY ft.fuel_type, ft.tank_number, ft.id`,
+    [dailyEntryId, pumpId]
+  );
+
+  const tanksByFuel = {
+    petrol: [],
+    diesel: [],
+    mobileOil: []
+  };
+
+  for (const row of tankRows || []) {
+    const fuelKey = normalizeTankFuelKey(row.fuel_type);
+    if (fuelKey === 'petrol' || fuelKey === 'diesel' || fuelKey === 'mobileOil') {
+      tanksByFuel[fuelKey].push(row);
+    }
+  }
+
+  for (const fuelKey of Object.keys(tanksByFuel)) {
+    let remainingSold = Number(soldByFuel[fuelKey] || 0);
+
+    for (const tank of tanksByFuel[fuelKey]) {
+      const baseLevel = Math.max(0, getTankBaseLevel(tank));
+      const soldQty = Math.min(baseLevel, remainingSold);
+      remainingSold = Math.max(0, remainingSold - soldQty);
+      const nextCurrentLevel = Math.max(0, baseLevel - soldQty);
+
+      if (tank.inventory_id) {
+        await connection.execute(
+          `UPDATE daily_tank_inventory
+           SET sold_quantity = ?,
+               MB = ?,
+               md = NOW()
+           WHERE id = ?`,
+          [soldQty, mb, tank.inventory_id]
+        );
+      } else {
+        await connection.execute(
+          `INSERT INTO daily_tank_inventory
+             (daily_entry_id, tank_id, opening_level, closing_level, received_quantity, sold_quantity, purchase_reference, cd, md, CB, MB, Active)
+           VALUES (?, ?, NULL, NULL, 0, ?, NULL, NOW(), NOW(), ?, ?, 1)`,
+          [dailyEntryId, tank.tank_id, soldQty, cb, mb]
+        );
+      }
+
+      await connection.execute(
+        `UPDATE fuel_tanks
+         SET current_level = ?,
+             MB = ?,
+             MD = NOW()
+         WHERE id = ?
+           AND pump_id = ?
+           AND Active = 1`,
+        [nextCurrentLevel, mb, tank.tank_id, pumpId]
+      );
+    }
+
+    if (remainingSold > 0.0001) {
+      throw new Error(`Insufficient ${fuelKey} tank stock for daily sales. Remaining unallocated sold quantity: ${remainingSold.toFixed(2)} L`);
+    }
+  }
+}
+
 /**
  * Get latest closing_digital_reading and closing_mechanical_reading from nozzle_readings
  * for each nozzle of a pump (from the most recent daily entry before entry_date).
@@ -242,7 +368,9 @@ exports.submitDailyEntry = async (req, res) => {
       );
       await connection.execute('DELETE FROM cash_management WHERE daily_entry_id = ?', [dailyEntryId]);
       await connection.execute('DELETE FROM credit_sales WHERE daily_entry_id = ?', [dailyEntryId]);
-      await connection.execute('DELETE FROM daily_tank_inventory WHERE daily_entry_id = ?', [dailyEntryId]);
+
+      // Preserve daily_tank_inventory rows from dip readings / receipts.
+      // We update sold_quantity later from nozzle sales instead of deleting these rows.
     }
 
     // 2. Nozzle readings (one row per nozzle: use max of digital/mechanical sold)
@@ -461,25 +589,14 @@ exports.submitDailyEntry = async (req, res) => {
       );
     }
 
-    // 10. Daily tank inventory (optional: if payload has tank entries)
-    const tankInventory = body.daily_tank_inventory || [];
-    for (const ti of tankInventory) {
-      await connection.execute(
-        `INSERT INTO daily_tank_inventory (daily_entry_id, tank_id, opening_level, closing_level, received_quantity, sold_quantity, purchase_reference, cd, md, CB, MB, Active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
-        [
-          dailyEntryId,
-          ti.tank_id,
-          ti.opening_level ?? 0,
-          ti.closing_level ?? 0,
-          ti.received_quantity ?? 0,
-          ti.sold_quantity ?? 0,
-          ti.purchase_reference ?? null,
-          cb,
-          mb
-        ]
-      );
-    }
+    // 10. Update tank sold quantities from machine/nozzle sales and recompute live tank stock.
+    await syncTankInventoryAndStockForDailyEntry(connection, {
+      dailyEntryId,
+      pumpId,
+      machines,
+      cb,
+      mb
+    });
 
     await connection.commit();
     connection.release();
