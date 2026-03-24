@@ -125,8 +125,8 @@ exports.addStaff = async (req, res) => {
             // Create user (CB = Created By, CD = Created Date)
             const hashedPassword = await bcrypt.hash(passwordVal, 10);
             const [userResult] = await db.execute(
-                'INSERT INTO users (name, email, password, roleid, CB, CD) VALUES (?, ?, ?, ?, ?, NOW())',
-                [name.trim(), emailVal, hashedPassword, roleId, createdBy]
+                'INSERT INTO users (name, email, password, roleid, CB, CD, MB) VALUES (?, ?, ?, ?, ?, NOW(), ?)',
+                [name.trim(), emailVal, hashedPassword, roleId, createdBy, createdBy]
             );
             userId = userResult.insertId;
         }

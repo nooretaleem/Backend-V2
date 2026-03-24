@@ -87,6 +87,7 @@ exports.addUser = async (req, res) => {
     const password = req.body.password;
     const role = Number(req.body.role);
     const CB = req.body.CB || 'System';
+    const MB = req.body.MB || CB;
     const createStaffRecord = req.body.createStaffRecord === true;
     let conn;
 
@@ -113,8 +114,8 @@ exports.addUser = async (req, res) => {
             const roleName = roleRow?.roletype || null;
 
             const [result] = await conn.execute(
-                'INSERT INTO users (name, password, email, roleid, CB) VALUES (?, ?, ?, ?, ?)',
-                [name, hash, email, role, CB]
+                'INSERT INTO users (name, password, email, roleid, CB, MB) VALUES (?, ?, ?, ?, ?, ?)',
+                [name, hash, email, role, CB, MB]
             );
 
             let staffId = null;

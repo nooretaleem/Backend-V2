@@ -1272,12 +1272,12 @@ exports.saveDipReadings = async (req, res) => {
 
     await connection.beginTransaction();
 
-    // 1. Insert or get daily_sales_entries (status = Started unless already fully submitted)
+    // 1. Insert or get daily_sales_entries
     await connection.execute(
       `INSERT INTO daily_sales_entries (pump_id, entry_date, status, submitted_at, CB, MB, cd, md, Active)
-       VALUES (?, ?, 'Started', NOW(), ?, ?, NOW(), NOW(), 1)
+       VALUES (?, ?, 'submitted', NOW(), ?, ?, NOW(), NOW(), 1)
        ON DUPLICATE KEY UPDATE
-         status = CASE WHEN status = 'submitted' THEN 'submitted' ELSE 'Started' END,
+         status = 'submitted',
          MB = VALUES(MB),
          md = NOW()`,
       [pumpId, entryDate, cb, mb]
