@@ -428,8 +428,12 @@ exports.updatePump = async (req, res) => {
       // Process tanks: update existing or insert new
       const processedTankIds = new Set();
       for (const t of tanks) {
-        const key = `${t.fuel_type || ''}-${t.tank_number || ''}`;
-        const existingId = existingTankMap.get(key);
+        // Check if explicit ID is provided (preferred for updates), otherwise use key match
+        let existingId = t.id ? Number(t.id) : null;
+        if (!existingId) {
+          const key = `${t.fuel_type || ''}-${t.tank_number || ''}`;
+          existingId = existingTankMap.get(key);
+        }
 
         if (existingId) {
           // Update existing tank

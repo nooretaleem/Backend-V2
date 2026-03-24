@@ -5,12 +5,20 @@ const bcrypt = require('bcrypt');
 exports.getStaff = async (req, res) => {
     try {
         const query = `
-            SELECT id, staffCode, name, phone, designation, employmentType,
-                   joiningDate, user_id, pump_id, cnic, salary,
-                   cd, md, CB, MB, Active
-            FROM staff
-            WHERE Active = 1
-            ORDER BY name
+            SELECT s.id, s.staffCode, s.name, s.phone, s.designation, s.employmentType,
+                   s.joiningDate, s.user_id,
+                   COALESCE(ps.pumpid, s.pump_id) AS pump_id,
+                   s.cnic, s.salary,
+                   s.cd, s.md, s.CB, s.MB, s.Active
+            FROM staff s
+            LEFT JOIN (
+                SELECT staffid, MAX(pumpid) AS pumpid
+                FROM pump_staff
+                WHERE Active = 1
+                GROUP BY staffid
+            ) ps ON ps.staffid = s.id
+            WHERE s.Active = 1
+            ORDER BY s.name
         `;
         const [rows] = await db.execute(query);
         res.json(rows);
