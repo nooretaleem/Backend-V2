@@ -67,9 +67,21 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
   dailyEntryId,
   pumpId,
   machines,
+  allowUnallocatedTankStock,
   cb,
   mb
 }) {
+  // Ensure stock_variance column exists for environments that haven't run schema migration yet.
+  try {
+    await connection.execute(
+      `ALTER TABLE daily_tank_inventory ADD COLUMN stock_variance DECIMAL(12,4) DEFAULT NULL`
+    );
+  } catch (alterErr) {
+    if (alterErr.code !== 'ER_DUP_FIELDNAME') {
+      throw alterErr;
+    }
+  }
+
   const soldByFuel = { petrol: 0, diesel: 0, mobileOil: 0 };
 
   for (const machine of machines || []) {
@@ -110,6 +122,7 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
     diesel: [],
     mobileOil: []
   };
+  const unallocatedByFuel = {};
 
   for (const row of tankRows || []) {
     const fuelKey = normalizeTankFuelKey(row.fuel_type);
@@ -119,9 +132,10 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
   }
 
   for (const fuelKey of Object.keys(tanksByFuel)) {
+    const fuelTanks = tanksByFuel[fuelKey] || [];
     let remainingSold = Number(soldByFuel[fuelKey] || 0);
 
-    for (const tank of tanksByFuel[fuelKey]) {
+    for (const tank of fuelTanks) {
       const baseLevel = Math.max(0, getTankBaseLevel(tank));
       const soldQty = Math.min(baseLevel, remainingSold);
       remainingSold = Math.max(0, remainingSold - soldQty);
@@ -158,9 +172,32 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
     }
 
     if (remainingSold > 0.0001) {
-      throw new Error(`Insufficient ${fuelKey} tank stock for daily sales. Remaining unallocated sold quantity: ${remainingSold.toFixed(2)} L`);
+      const exceededQty = Number(remainingSold.toFixed(2));
+      unallocatedByFuel[fuelKey] = exceededQty;
+
+      // Store exceeded sold quantity as negative variance on this fuel's last tank for the day.
+      // This keeps a persisted audit trail of stock shortfall tied to daily_tank_inventory.
+      const varianceTank = fuelTanks.length > 0 ? fuelTanks[fuelTanks.length - 1] : null;
+      if (varianceTank && varianceTank.tank_id) {
+        await connection.execute(
+          `UPDATE daily_tank_inventory
+           SET stock_variance = COALESCE(stock_variance, 0) - ?,
+               MB = ?,
+               md = NOW()
+           WHERE daily_entry_id = ?
+             AND tank_id = ?
+             AND Active = 1`,
+          [exceededQty, mb, dailyEntryId, varianceTank.tank_id]
+        );
+      }
+
+      if (!allowUnallocatedTankStock) {
+        throw new Error(`Insufficient ${fuelKey} tank stock for daily sales. Remaining unallocated sold quantity: ${remainingSold.toFixed(2)} L`);
+      }
     }
   }
+
+  return { unallocatedByFuel };
 }
 
 /**
@@ -312,6 +349,9 @@ exports.submitDailyEntry = async (req, res) => {
     const body = req.body || {};
     const pumpId = body.pump_id;
     const entryDate = body.entry_date; // YYYY-MM-DD
+    const allowUnallocatedTankStock = body.allow_unallocated_tank_stock === true
+      || body.allow_unallocated_tank_stock === 1
+      || String(body.allow_unallocated_tank_stock || '').toLowerCase() === 'true';
     // CB/MB = username from frontend only (no default)
     const cb = (body.CB != null && String(body.CB).trim() !== '') ? String(body.CB).trim()
       : (body.MB != null && String(body.MB).trim() !== '') ? String(body.MB).trim()
@@ -333,6 +373,12 @@ exports.submitDailyEntry = async (req, res) => {
 
     await connection.beginTransaction();
 
+    const [[existingEntryRow]] = await connection.execute(
+      `SELECT id FROM daily_sales_entries WHERE pump_id = ? AND entry_date = ? LIMIT 1`,
+      [pumpId, entryDate]
+    );
+    const existingDailyEntryId = existingEntryRow?.id ? Number(existingEntryRow.id) : null;
+
     // 1. Insert or update daily_sales_entries (one per pump per date; duplicate = update so no error)
     const [entryResult] = await connection.execute(
       `INSERT INTO daily_sales_entries (pump_id, entry_date, status, submitted_at, CB, MB, cd, md, Active)
@@ -340,7 +386,7 @@ exports.submitDailyEntry = async (req, res) => {
        ON DUPLICATE KEY UPDATE status = 'submitted', submitted_at = NOW(), CB = VALUES(CB), MB = VALUES(MB), md = NOW()`,
       [pumpId, entryDate, cb, mb]
     );
-    let dailyEntryId = entryResult.insertId;
+    let dailyEntryId = entryResult.insertId || existingDailyEntryId;
     if (!dailyEntryId) {
       const [[row]] = await connection.execute(
         `SELECT id FROM daily_sales_entries WHERE pump_id = ? AND entry_date = ? LIMIT 1`,
@@ -348,6 +394,9 @@ exports.submitDailyEntry = async (req, res) => {
       );
       if (!row || !row.id) throw new Error('Failed to create or find daily_sales_entries record');
       dailyEntryId = row.id;
+    }
+
+    if (existingDailyEntryId) {
       // Re-submit: remove existing child rows so we can insert fresh data
       await connection.execute('DELETE FROM nozzle_readings WHERE daily_entry_id = ?', [dailyEntryId]);
       await connection.execute('DELETE FROM machine_readings WHERE daily_entry_id = ?', [dailyEntryId]);
@@ -590,10 +639,11 @@ exports.submitDailyEntry = async (req, res) => {
     }
 
     // 10. Update tank sold quantities from machine/nozzle sales and recompute live tank stock.
-    await syncTankInventoryAndStockForDailyEntry(connection, {
+    const tankSyncResult = await syncTankInventoryAndStockForDailyEntry(connection, {
       dailyEntryId,
       pumpId,
       machines,
+      allowUnallocatedTankStock,
       cb,
       mb
     });
@@ -601,21 +651,46 @@ exports.submitDailyEntry = async (req, res) => {
     await connection.commit();
     connection.release();
 
+    const unallocatedByFuel = tankSyncResult?.unallocatedByFuel || {};
+    const hasUnallocated = Object.keys(unallocatedByFuel).length > 0;
+
     return res.status(200).json({
       message: 'Daily report submitted successfully',
-      daily_entry_id: dailyEntryId
+      daily_entry_id: dailyEntryId,
+      warning: hasUnallocated
+        ? `Submitted with unallocated sold quantity: ${Object.entries(unallocatedByFuel).map(([fuel, qty]) => `${fuel} ${Number(qty).toFixed(2)} L`).join(', ')}`
+        : undefined,
+      unallocated_by_fuel: hasUnallocated ? unallocatedByFuel : undefined
     });
   } catch (err) {
     if (connection) {
       try { await connection.rollback(); } catch (_) { }
       connection.release();
     }
-    // Duplicate entry: one daily entry per pump per date (unique_daily_entry)
-    const isDuplicate = err.code === 'ER_DUP_ENTRY' || (err.sqlState === '23000' && /Duplicate entry/.test(err.sqlMessage || ''));
-    if (isDuplicate) {
+    const errMessage = err?.message || '';
+    const isInsufficientTankStock = /Insufficient\s+[a-zA-Z]+\s+tank stock for daily sales\. Remaining unallocated sold quantity:/i.test(errMessage);
+    if (isInsufficientTankStock) {
+      return res.status(409).json({
+        message: errMessage,
+        code: 'INSUFFICIENT_TANK_STOCK'
+      });
+    }
+
+    // Duplicate-key errors can come from tables other than daily_sales_entries.
+    // Only report the friendly daily-entry message for the actual pump/date unique key.
+    const duplicateSqlMessage = err.sqlMessage || '';
+    const isDuplicate = err.code === 'ER_DUP_ENTRY' || (err.sqlState === '23000' && /Duplicate entry/.test(duplicateSqlMessage));
+    const isDailyEntryDuplicate = isDuplicate && /unique_daily_entry|daily_sales_entries/i.test(duplicateSqlMessage);
+    if (isDailyEntryDuplicate) {
       return res.status(409).json({
         message: 'A daily sales entry for this pump and date already exists. Please edit the existing entry or choose a different date.',
         code: 'DUPLICATE_ENTRY'
+      });
+    }
+    if (isDuplicate) {
+      return res.status(409).json({
+        message: duplicateSqlMessage || 'A duplicate record conflict occurred while saving daily sales entry.',
+        code: 'DUPLICATE_KEY'
       });
     }
     console.error('submitDailyEntry error:', err);
