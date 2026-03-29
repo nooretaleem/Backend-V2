@@ -3242,7 +3242,7 @@ exports.addSale = async (req, res) => {
                     // For Self customer mobile oil sales, keep purchase-side tracking in mobile_oil_purchase.
                     if ((product_type || '').toLowerCase() === 'mobile/lube oil') {
                         const normalizedContainerType = String(container_type || '').trim().toLowerCase();
-                        const purchaseContainerType = ['carton', 'cotton', 'can', 'drum'].includes(normalizedContainerType)
+                        const purchaseContainerType = ['carton', 'cotton', 'can', 'drum', 'dew'].includes(normalizedContainerType)
                             ? normalizedContainerType
                             : null;
                         const purchaseContainerLiters = purchaseContainerType === 'carton' || purchaseContainerType === 'cotton'
@@ -3254,9 +3254,10 @@ exports.addSale = async (req, res) => {
 
                         await connection.execute(
                             `INSERT INTO mobile_oil_purchase
-                                (liters_purchased, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, cd, md, cb, mb, active)
-                             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
+                                (pump_id, liters_purchased, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, cd, md, cb, mb, active)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
                             [
+                                pump_id,
                                 requestedFuel,
                                 Number(rate),
                                 Number(total_amount),
