@@ -3091,6 +3091,7 @@ exports.addSale = async (req, res) => {
             customer_type_id,
             Qty,
             capacity,
+            no_of_containers,
             fuel,
             rate,
             Discount,
@@ -3245,12 +3246,18 @@ exports.addSale = async (req, res) => {
                         const purchaseContainerType = ['carton', 'cotton', 'can', 'drum', 'dew'].includes(normalizedContainerType)
                             ? normalizedContainerType
                             : null;
-                        const purchaseContainerLiters = purchaseContainerType === 'carton' || purchaseContainerType === 'cotton'
-                            ? (Number(capacity) || null)
-                            : null;
-                        const purchaseNoOfContainers = purchaseContainerType === 'carton' || purchaseContainerType === 'cotton'
-                            ? (Number(qty) || null)
-                            : null;
+                        // Prefer payload values; fallback to trip product container metadata for all container types.
+                        const fallbackContainerLiters = Number(tripProduct.container_liters) || null;
+                        const purchaseContainerLiters = Number(capacity) || fallbackContainerLiters || null;
+
+                        let purchaseNoOfContainers = Number(no_of_containers) || null;
+                        if (!purchaseNoOfContainers && purchaseContainerType) {
+                            if (purchaseContainerType === 'carton' || purchaseContainerType === 'cotton') {
+                                purchaseNoOfContainers = Number(qty) || null;
+                            } else if (purchaseContainerLiters && purchaseContainerLiters > 0) {
+                                purchaseNoOfContainers = Number((requestedFuel / purchaseContainerLiters).toFixed(3));
+                            }
+                        }
 
                         await connection.execute(
                             `INSERT INTO mobile_oil_purchase
