@@ -293,7 +293,7 @@ exports.getPlotDashboard = async (req, res) => {
         res.json([{ plot: 0 }]);
     }
 };
-exports. getProfitSummary = async (req, res) => {
+exports.getProfitSummary = async (req, res) => {
     try {
         // Return default values if tables don't exist
         res.json({
@@ -386,9 +386,9 @@ exports.getDashboardData = async (req, res) => {
                        COALESCE(SUM(CASE WHEN active = 1 THEN Balance ELSE 0 END), 0) as total_balance
                 FROM accounts
             `);
-            
+
             console.log('[Dashboard] Bank Balance Debug Info:', debugRows[0]);
-            
+
             // Get the actual balance
             const [bankRows] = await db.execute(`
                 SELECT COALESCE(SUM(Balance), 0) as total_balance
@@ -431,12 +431,12 @@ exports.getDashboardData = async (req, res) => {
                 GROUP BY c.id
                 HAVING due_amount > 0
             `);
-            
+
             // Sum all client dues
             totalClientDue = clientDuesRows.reduce((sum, row) => {
                 return sum + parseFloat(row.due_amount || 0);
             }, 0);
-            
+
             console.log(`[Dashboard] Total Client Due calculated: ${totalClientDue} (from ${clientDuesRows.length} clients with dues)`);
         } catch (err) {
             console.error('Error fetching total client due:', err);
@@ -504,11 +504,11 @@ exports.getDashboardData = async (req, res) => {
                 WHERE d.active = 1
                 ORDER BY d.name ASC
             `);
-            
+
             // For each depo, calculate current limit by summing all active transactions
             depoCreditUsage = await Promise.all(depoRows.map(async (row) => {
                 const initialLimit = parseFloat(row.InitialLimit || 0);
-                
+
                 // Calculate current limit: InitialLimit + SUM(Credit) - SUM(Debit) for all active entries
                 // This is more reliable than using DepoLimit field which might not be updated correctly
                 const [currentLimitRows] = await db.execute(`
@@ -520,22 +520,22 @@ exports.getDashboardData = async (req, res) => {
                       AND active = 1
                       AND NOT (TripID IS NULL AND recovery_id IS NULL AND payment_id IS NULL)
                 `, [row.DepoID]);
-                
+
                 const totalCredit = parseFloat(currentLimitRows[0]?.total_credit || 0);
                 const totalDebit = parseFloat(currentLimitRows[0]?.total_debit || 0);
-                
+
                 // Current limit = Initial balance + Credits (payments received) - Debits (credit purchases)
                 const currentLimit = initialLimit + totalCredit - totalDebit;
-                
+
                 // Limit = Initial DepoLimit (starting balance)
                 const limit = initialLimit;
-                
+
                 // Available = Current limit after all active transactions
                 const available = Math.max(0, currentLimit); // Ensure non-negative
-                
+
                 // Used = Initial Limit - Available
                 const used = Math.max(0, initialLimit - available);
-                
+
                 // Get advance balance from advance_balance table (latest Balance)
                 const [advanceRows] = await db.execute(`
                     SELECT COALESCE(Balance, 0) as advance_balance
@@ -544,9 +544,9 @@ exports.getDashboardData = async (req, res) => {
                     ORDER BY ID DESC
                     LIMIT 1
                 `, [row.DepoID]);
-                
+
                 const advanceBalance = parseFloat(advanceRows[0]?.advance_balance || 0);
-                
+
                 // Calculate used advance balance from advance_balance table (Debit entries with TripID)
                 // Sum all Debit entries in advance_balance table for active trips for this depo
                 const [usedAdvanceRows] = await db.execute(`
@@ -559,12 +559,12 @@ exports.getDashboardData = async (req, res) => {
                       AND ab.Debit > 0
                       AND ab.TripID IS NOT NULL
                 `, [row.DepoID]);
-                
+
                 const usedAdvanceBalance = parseFloat(usedAdvanceRows[0]?.total_used_advance || 0);
                 const availableAdvanceBalance = Math.max(0, advanceBalance - usedAdvanceBalance);
-                
+
                 console.log(`Depo ${row.DepoID} (${row.DepoName}): InitialLimit=${initialLimit}, TotalCredit=${totalCredit}, TotalDebit=${totalDebit}, CurrentLimit=${currentLimit}, Limit=${limit}, Used=${used}, Available=${available}, AdvanceBalance=${advanceBalance}, UsedAdvance=${usedAdvanceBalance}, AvailableAdvance=${availableAdvanceBalance}`);
-                
+
                 return {
                     depo: row.DepoName || `Depo ${row.DepoID}`,
                     depo_id: row.DepoID,
@@ -630,7 +630,7 @@ exports.getDashboardData = async (req, res) => {
                 AND CD < CURDATE() + INTERVAL 1 DAY;
             `);
             fuelPurchased = parseFloat(fuelPurchasedRows[0]?.total || 0);
-            
+
             // Fuel Purchased Volume - get total volume from trip_products
             const [fuelPurchasedVolumeRows] = await db.execute(`
                 SELECT 
@@ -698,7 +698,7 @@ exports.getDashboardData = async (req, res) => {
                 SELECT COALESCE(SUM(p.Amount), 0) as total
                 FROM payments p
                 INNER JOIN transactions t ON t.ID = p.transactionID
-                WHERE (t.Purpose LIKE '%Payment to %' OR t.Purpose LIKE 'Payment for %')
+                WHERE (t.Purpose LIKE '%Payment to %' OR t.Purpose LIKE 'Payment for %' OR t.Purpose LIKE 'Owner/Dealer Withdrawal from Daily Sales Entry %')
                   AND t.active = 1
                   AND p.active = 1
                   AND p.DepoID IS NOT NULL 
@@ -802,7 +802,7 @@ exports.getDashboardData = async (req, res) => {
 exports.getFilteredClientDue = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Use range queries (>= and <) for performance, not DATE() function
         // Filter both sales and payments by the SAME date range
         // Calculate date range based on filter
@@ -811,7 +811,7 @@ exports.getFilteredClientDue = async (req, res) => {
         let dateStart = null;
         let dateEnd = null;
         let dateRangeInfo = {};
-        
+
         switch (filter) {
             case 'daily':
                 // Today: from start of today to start of tomorrow
@@ -849,7 +849,7 @@ exports.getFilteredClientDue = async (req, res) => {
                 dateEnd.setDate(dateEnd.getDate() + 1);
                 dateRangeInfo = { description: 'Today', start: dateStart, end: dateEnd };
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -857,15 +857,15 @@ exports.getFilteredClientDue = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Build date range conditions using range queries (>= and <) for performance
         // Use CD (Created Date) column for date filtering
         const salesDateRange = `AND ps.CD >= '${startStr}' AND ps.CD < '${endStr}'`;
         const recoveriesDateRange = `AND r.CD >= '${startStr}' AND r.CD < '${endStr}'`;
-        
+
         // Client dues = SUM(sales.net_amount or total_amount) - SUM(payments.amount)
         // Both filtered by the SAME date range
         // Use LEFT JOIN so unpaid sales are still counted
@@ -927,21 +927,21 @@ exports.getFilteredClientDue = async (req, res) => {
                 ), 0) > 0
             )
         `);
-        
+
         // Calculate due_amount and last_transaction_date for each customer
         const clientDuesRows = clientDuesBaseRows.map(row => {
             const total_sales = parseFloat(row.total_sales || 0);
             const total_recoveries = parseFloat(row.total_recoveries || 0);
             const due_amount = total_sales - total_recoveries;
-            
+
             const last_sale_date = row.last_sale_date || null;
             const last_recovery_date = row.last_recovery_date || null;
-            
-            const last_transaction_date = 
-                (!last_recovery_date || (last_sale_date && last_sale_date > last_recovery_date)) 
-                    ? last_sale_date 
+
+            const last_transaction_date =
+                (!last_recovery_date || (last_sale_date && last_sale_date > last_recovery_date))
+                    ? last_sale_date
                     : last_recovery_date;
-            
+
             return {
                 client_id: row.client_id,
                 client_name: row.client_name,
@@ -953,14 +953,14 @@ exports.getFilteredClientDue = async (req, res) => {
                 last_transaction_date: last_transaction_date
             };
         });
-        
+
         // Sum all remaining amounts (only positive remaining, negative means overpaid)
         const totalClientDue = clientDuesRows.reduce((sum, row) => {
             const remaining = parseFloat(row.due_amount || 0);
             // Only add positive remaining amounts (if paid > purchased, remaining is negative, so don't count it)
             return sum + (remaining > 0 ? remaining : 0);
         }, 0);
-        
+
         // Format date for display
         const formatDateForDisplay = (date) => {
             const year = date.getFullYear();
@@ -968,14 +968,14 @@ exports.getFilteredClientDue = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
         };
-        
+
         const actualDateRange = {
             start: formatDateForDisplay(dateStart),
             end: formatDateForDisplay(new Date(dateEnd.getTime() - 1)) // Subtract 1 day for display
         };
-        
+
         console.log(`[Filtered Client Due] Filter: ${filter} (${dateRangeInfo.description}), Total: ${totalClientDue} (from ${clientDuesRows.length} clients with dues), Date Range: ${actualDateRange.start} to ${actualDateRange.end}`);
-        
+
         res.json({
             success: true,
             totalClientDue: totalClientDue,
@@ -1085,7 +1085,7 @@ exports.getCreditTrips = async (req, res) => {
 exports.getFilteredDealerPayables = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Use range queries (>= and <) for performance, not DATE() function
         // Filter trip_depos by trip date (CD column from trips table)
         // Calculate date range based on filter
@@ -1094,7 +1094,7 @@ exports.getFilteredDealerPayables = async (req, res) => {
         let dateStart = null;
         let dateEnd = null;
         let dateRangeInfo = {};
-        
+
         switch (filter) {
             case 'daily':
                 // Today: from start of today to start of tomorrow
@@ -1132,7 +1132,7 @@ exports.getFilteredDealerPayables = async (req, res) => {
                 dateEnd.setDate(dateEnd.getDate() + 1);
                 dateRangeInfo = { description: 'Today', start: dateStart, end: dateEnd };
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -1140,13 +1140,13 @@ exports.getFilteredDealerPayables = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Build date range condition for trips (filter by trip date)
         const tripDateRange = `AND t.CD >= '${startStr}' AND t.CD < '${endStr}'`;
-        
+
         // Calculate total payable to dealers for the filtered period
         // Join with trips table to filter by trip date
         const [payableRows] = await db.execute(`
@@ -1158,9 +1158,9 @@ exports.getFilteredDealerPayables = async (req, res) => {
               AND td.Active = 1
               ${tripDateRange}
         `);
-        
+
         const tripPayableAmount = parseFloat(payableRows[0]?.total_remaining || 0);
-        
+
         // Get total previous_payables from all active dealers
         // previous_payables is an opening balance, so it should be included in all time periods
         const [previousPayablesRows] = await db.execute(`
@@ -1168,12 +1168,12 @@ exports.getFilteredDealerPayables = async (req, res) => {
             FROM depo
             WHERE active = 1
         `);
-        
+
         const totalPreviousPayables = parseFloat(previousPayablesRows[0]?.total_previous_payables || 0);
-        
+
         // Total payable = previous_payables + trip payables
         const totalPayableToDealers = totalPreviousPayables + tripPayableAmount;
-        
+
         // Format date for display
         const formatDateForDisplay = (date) => {
             const year = date.getFullYear();
@@ -1181,14 +1181,14 @@ exports.getFilteredDealerPayables = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
         };
-        
+
         const actualDateRange = {
             start: formatDateForDisplay(dateStart),
             end: formatDateForDisplay(new Date(dateEnd.getTime() - 1)) // Subtract 1 day for display
         };
-        
+
         console.log(`[Filtered Dealer Payables] Filter: ${filter} (${dateRangeInfo.description}), Total: ${totalPayableToDealers}, Date Range: ${actualDateRange.start} to ${actualDateRange.end}`);
-        
+
         res.json({
             success: true,
             totalPayableToDealers: totalPayableToDealers,
@@ -1197,11 +1197,11 @@ exports.getFilteredDealerPayables = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered dealer payables:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
-            totalPayableToDealers: 0 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
+            totalPayableToDealers: 0
         });
     }
 };
@@ -1209,7 +1209,7 @@ exports.getFilteredDealerPayables = async (req, res) => {
 exports.getDealerPayables = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly', or undefined for all
-        
+
         // Build date range condition if filter is provided
         let tripDateRange = '';
         if (filter) {
@@ -1217,7 +1217,7 @@ exports.getDealerPayables = async (req, res) => {
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             let dateStart = null;
             let dateEnd = null;
-            
+
             switch (filter) {
                 case 'daily':
                     dateStart = today;
@@ -1242,7 +1242,7 @@ exports.getDealerPayables = async (req, res) => {
                     dateEnd = new Date(now.getFullYear() + 1, 0, 1);
                     break;
             }
-            
+
             if (dateStart && dateEnd) {
                 const formatDateTime = (date) => {
                     const year = date.getFullYear();
@@ -1250,13 +1250,13 @@ exports.getDealerPayables = async (req, res) => {
                     const day = String(date.getDate()).padStart(2, '0');
                     return `${year}-${month}-${day} 00:00:00`;
                 };
-                
+
                 const startStr = formatDateTime(dateStart);
                 const endStr = formatDateTime(dateEnd);
                 tripDateRange = `AND t.CD >= '${startStr}' AND t.CD < '${endStr}'`;
             }
         }
-        
+
         // Get all active dealers with their payable amounts
         // Calculate based on trip_depos (payable_amount - paid_amount) for credit purchases
         // Use subquery to filter by trip date if filter is provided (avoids JOIN issues)
@@ -1269,7 +1269,7 @@ exports.getDealerPayables = async (req, res) => {
                 SELECT id FROM trips WHERE active = 1 ${subqueryDateRange}
             )`;
         }
-        
+
         const [dealerPayablesRows] = await db.execute(`
             SELECT 
                 d.id as depo_id,
@@ -1369,7 +1369,7 @@ exports.getDealerPayables = async (req, res) => {
 exports.getClientDues = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly', or undefined for all
-        
+
         // If no filter, show all-time data
         if (!filter) {
             // Get all clients with their all-time due amounts
@@ -1435,18 +1435,18 @@ exports.getClientDues = async (req, res) => {
                 const total_sales = parseFloat(row.total_sales || 0);
                 const total_recoveries = parseFloat(row.total_recoveries || 0);
                 const due_amount = total_sales - total_recoveries;
-                
+
                 const last_sale_date = row.last_sale_date || null;
                 const last_recovery_date = row.last_recovery_date || null;
-                
-                const last_transaction_date = 
-                    (!last_recovery_date || (last_sale_date && last_sale_date > last_recovery_date)) 
-                        ? last_sale_date 
+
+                const last_transaction_date =
+                    (!last_recovery_date || (last_sale_date && last_sale_date > last_recovery_date))
+                        ? last_sale_date
                         : last_recovery_date;
-                
+
                 return {
-            client_id: row.client_id,
-            client_name: row.client_name,
+                    client_id: row.client_id,
+                    client_name: row.client_name,
                     total_sales: total_sales,
                     total_recoveries: total_recoveries,
                     due_amount: due_amount,
@@ -1458,17 +1458,17 @@ exports.getClientDues = async (req, res) => {
 
             return res.json(clientDuesRows);
         }
-        
+
         // For filtered queries, show only activity in that period
         // Use range queries (>= and <) for performance, not DATE() function
         // Filter both sales and payments by the SAME date range
         let dateStart = null;
         let dateEnd = null;
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        
+
         switch (filter) {
             case 'daily':
                 // Today: from start of today to start of tomorrow
@@ -1499,7 +1499,7 @@ exports.getClientDues = async (req, res) => {
                 dateStart = null;
                 dateEnd = null;
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -1507,12 +1507,12 @@ exports.getClientDues = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         // Build date range conditions using range queries (>= and <) for performance
         // Use CD (Created Date) column for date filtering
         let salesDateRange = '';
         let recoveriesDateRange = '';
-        
+
         if (dateStart && dateEnd) {
             const startStr = formatDateTime(dateStart);
             const endStr = formatDateTime(dateEnd);
@@ -1520,7 +1520,7 @@ exports.getClientDues = async (req, res) => {
             salesDateRange = `AND ps.CD >= '${startStr}' AND ps.CD < '${endStr}'`;
             recoveriesDateRange = `AND r.CD >= '${startStr}' AND r.CD < '${endStr}'`;
         }
-        
+
         // Use subqueries to avoid Cartesian product when joining sales and recoveries
         // Calculate sales and recoveries separately, then combine to get accurate totals
         const [clientDuesBaseRows] = await db.execute(`
@@ -1580,21 +1580,21 @@ exports.getClientDues = async (req, res) => {
             )
             ORDER BY c.name ASC
         `);
-        
+
         // Calculate due_amount and last_transaction_date for each customer
         const clientDuesRows = clientDuesBaseRows.map(row => {
             const total_sales = parseFloat(row.total_sales || 0);
             const total_recoveries = parseFloat(row.total_recoveries || 0);
             const due_amount = total_sales - total_recoveries;
-            
+
             const last_sale_date = row.last_sale_date || null;
             const last_recovery_date = row.last_recovery_date || null;
-            
-            const last_transaction_date = 
-                (!last_recovery_date || (last_sale_date && last_sale_date > last_recovery_date)) 
-                    ? last_sale_date 
+
+            const last_transaction_date =
+                (!last_recovery_date || (last_sale_date && last_sale_date > last_recovery_date))
+                    ? last_sale_date
                     : last_recovery_date;
-            
+
             return {
                 client_id: row.client_id,
                 client_name: row.client_name,
@@ -1621,13 +1621,13 @@ exports.getClientDues = async (req, res) => {
 exports.getFilteredExpenditure = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -1656,7 +1656,7 @@ exports.getFilteredExpenditure = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -1664,17 +1664,17 @@ exports.getFilteredExpenditure = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Build date conditions for each expense type
         const transactionDateRange = `AND t.CD >= '${startStr}' AND t.CD < '${endStr}'`;
         const vehicleRentDateRange = `AND vr.CD >= '${startStr}' AND vr.CD < '${endStr}'`;
         const vehicleExpenseDateRange = `AND ve.CD >= '${startStr}' AND ve.CD < '${endStr}'`;
-        
+
         let totalExpenditure = 0;
-        
+
         try {
             // Personal and Business expenses from expenses table (filtered by transaction date)
             const [personalBusinessRows] = await db.execute(`
@@ -1707,13 +1707,13 @@ exports.getFilteredExpenditure = async (req, res) => {
             const vehicleExpenseTotal = parseFloat(vehicleExpenseRows[0]?.total || 0);
 
             totalExpenditure = personalBusinessTotal + rentalTotal + vehicleExpenseTotal;
-            
+
             console.log(`[Filtered Expenditure] Filter: ${filter}, Personal/Business=${personalBusinessTotal}, Rental=${rentalTotal}, Vehicle=${vehicleExpenseTotal}, Total=${totalExpenditure}`);
         } catch (err) {
             console.error('Error fetching filtered expenditure:', err);
             totalExpenditure = 0;
         }
-        
+
         res.json({
             success: true,
             totalExpenditure: totalExpenditure,
@@ -1721,11 +1721,11 @@ exports.getFilteredExpenditure = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered expenditure:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
-            totalExpenditure: 0 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
+            totalExpenditure: 0
         });
     }
 };
@@ -1734,13 +1734,13 @@ exports.getFilteredExpenditure = async (req, res) => {
 exports.getFilteredFuelPurchased = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -1769,7 +1769,7 @@ exports.getFilteredFuelPurchased = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -1777,10 +1777,10 @@ exports.getFilteredFuelPurchased = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Get Fuel Purchased amount from trips table
         const [fuelPurchasedRows] = await db.execute(`
             SELECT 
@@ -1789,9 +1789,9 @@ exports.getFilteredFuelPurchased = async (req, res) => {
             WHERE active = 1
             AND CD >= ? AND CD < ?
         `, [startStr, endStr]);
-        
+
         const fuelPurchased = parseFloat(fuelPurchasedRows[0]?.total || 0);
-        
+
         // Get Fuel Purchased Volume from trip_products
         const [fuelPurchasedVolumeRows] = await db.execute(`
             SELECT 
@@ -1801,11 +1801,11 @@ exports.getFilteredFuelPurchased = async (req, res) => {
             WHERE t.active = 1
             AND t.CD >= ? AND t.CD < ?
         `, [startStr, endStr]);
-        
+
         const fuelPurchasedVolume = parseFloat(fuelPurchasedVolumeRows[0]?.volume || 0);
-        
+
         console.log(`[Filtered Fuel Purchased] Filter: ${filter}, Amount: ${fuelPurchased}, Volume: ${fuelPurchasedVolume}`);
-        
+
         res.json({
             success: true,
             fuelPurchased: fuelPurchased,
@@ -1814,10 +1814,10 @@ exports.getFilteredFuelPurchased = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered fuel purchased:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
             fuelPurchased: 0,
             fuelPurchasedVolume: 0
         });
@@ -1828,13 +1828,13 @@ exports.getFilteredFuelPurchased = async (req, res) => {
 exports.getFilteredFuelSold = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -1863,7 +1863,7 @@ exports.getFilteredFuelSold = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -1871,10 +1871,10 @@ exports.getFilteredFuelSold = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Get Fuel Sold amount and volume from pol_sale table
         const [fuelSoldRows] = await db.execute(`
             SELECT 
@@ -1884,12 +1884,12 @@ exports.getFilteredFuelSold = async (req, res) => {
             WHERE Active = 1
             AND CD >= ? AND CD < ?
         `, [startStr, endStr]);
-        
+
         const fuelSold = parseFloat(fuelSoldRows[0]?.total || 0);
         const fuelSoldVolume = parseFloat(fuelSoldRows[0]?.volume || 0);
-        
+
         console.log(`[Filtered Fuel Sold] Filter: ${filter}, Amount: ${fuelSold}, Volume: ${fuelSoldVolume}`);
-        
+
         res.json({
             success: true,
             fuelSold: fuelSold,
@@ -1898,10 +1898,10 @@ exports.getFilteredFuelSold = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered fuel sold:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
             fuelSold: 0,
             fuelSoldVolume: 0
         });
@@ -1912,13 +1912,13 @@ exports.getFilteredFuelSold = async (req, res) => {
 exports.getFilteredRentPaid = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -1947,7 +1947,7 @@ exports.getFilteredRentPaid = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -1955,10 +1955,10 @@ exports.getFilteredRentPaid = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Get Total Rent Paid from vehicle_rent table
         const [rentRows] = await db.execute(`
             SELECT COALESCE(SUM(total_rent), 0) as total
@@ -1966,11 +1966,11 @@ exports.getFilteredRentPaid = async (req, res) => {
             WHERE Active = 1
             AND CD >= ? AND CD < ?
         `, [startStr, endStr]);
-        
+
         const totalRentPaid = parseFloat(rentRows[0]?.total || 0);
-        
+
         console.log(`[Filtered Rent Paid] Filter: ${filter}, Total: ${totalRentPaid}`);
-        
+
         res.json({
             success: true,
             totalRentPaid: totalRentPaid,
@@ -1978,10 +1978,10 @@ exports.getFilteredRentPaid = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered rent paid:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
             totalRentPaid: 0
         });
     }
@@ -1991,13 +1991,13 @@ exports.getFilteredRentPaid = async (req, res) => {
 exports.getFilteredPayments = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -2026,7 +2026,7 @@ exports.getFilteredPayments = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -2034,10 +2034,10 @@ exports.getFilteredPayments = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Get Total Payment to Depos from payments table
         const [paymentToDeposRows] = await db.execute(`
             SELECT COALESCE(SUM(p.Amount), 0) as total
@@ -2049,11 +2049,11 @@ exports.getFilteredPayments = async (req, res) => {
               AND p.DepoID IS NOT NULL 
               AND p.CD >= ? AND p.CD < ?
         `, [startStr, endStr]);
-        
+
         const totalPayments = parseFloat(paymentToDeposRows[0]?.total || 0);
-        
+
         console.log(`[Filtered Payments] Filter: ${filter}, Total: ${totalPayments}`);
-        
+
         res.json({
             success: true,
             totalPayments: totalPayments,
@@ -2061,10 +2061,10 @@ exports.getFilteredPayments = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered payments:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
             totalPayments: 0
         });
     }
@@ -2074,13 +2074,13 @@ exports.getFilteredPayments = async (req, res) => {
 exports.getFilteredRecoveries = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -2109,7 +2109,7 @@ exports.getFilteredRecoveries = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -2117,10 +2117,10 @@ exports.getFilteredRecoveries = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Get Total Recoveries from recoveries table
         const [recoveriesRows] = await db.execute(`
             SELECT COALESCE(SUM(Amount), 0) as total
@@ -2128,11 +2128,11 @@ exports.getFilteredRecoveries = async (req, res) => {
             WHERE Active = 1
             AND CD >= ? AND CD < ?
         `, [startStr, endStr]);
-        
+
         const totalRecoveries = parseFloat(recoveriesRows[0]?.total || 0);
-        
+
         console.log(`[Filtered Recoveries] Filter: ${filter}, Total: ${totalRecoveries}`);
-        
+
         res.json({
             success: true,
             totalRecoveries: totalRecoveries,
@@ -2140,10 +2140,10 @@ exports.getFilteredRecoveries = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered recoveries:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
             totalRecoveries: 0
         });
     }
@@ -2153,13 +2153,13 @@ exports.getFilteredRecoveries = async (req, res) => {
 exports.getFilteredTripsCount = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -2188,7 +2188,7 @@ exports.getFilteredTripsCount = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -2196,10 +2196,10 @@ exports.getFilteredTripsCount = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         // Count trips in the filtered period
         const [tripsRows] = await db.execute(`
             SELECT COUNT(*) AS count
@@ -2207,11 +2207,11 @@ exports.getFilteredTripsCount = async (req, res) => {
             WHERE active = 1
             AND CD >= ? AND CD < ?
         `, [startStr, endStr]);
-        
+
         const tripsCount = parseInt(tripsRows[0]?.count || 0);
-        
+
         console.log(`[Filtered Trips Count] Filter: ${filter}, Count: ${tripsCount}`);
-        
+
         res.json({
             success: true,
             tripsCount: tripsCount,
@@ -2219,11 +2219,11 @@ exports.getFilteredTripsCount = async (req, res) => {
         });
     } catch (err) {
         console.error('Error fetching filtered trips count:', err);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server Error', 
-            error: err.message, 
-            tripsCount: 0 
+        res.status(500).json({
+            success: false,
+            message: 'Server Error',
+            error: err.message,
+            tripsCount: 0
         });
     }
 };
@@ -2231,18 +2231,18 @@ exports.getFilteredTripsCount = async (req, res) => {
 exports.getExpenditureBreakdown = async (req, res) => {
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly', or undefined for all
-        
+
         // Build date range conditions if filter is provided
         let transactionDateRange = '';
         let vehicleRentDateRange = '';
         let vehicleExpenseDateRange = '';
-        
+
         if (filter) {
             const now = new Date();
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             let dateStart = null;
             let dateEnd = null;
-            
+
             switch (filter) {
                 case 'daily':
                     dateStart = today;
@@ -2267,7 +2267,7 @@ exports.getExpenditureBreakdown = async (req, res) => {
                     dateEnd = new Date(now.getFullYear() + 1, 0, 1);
                     break;
             }
-            
+
             if (dateStart && dateEnd) {
                 const formatDateTime = (date) => {
                     const year = date.getFullYear();
@@ -2275,7 +2275,7 @@ exports.getExpenditureBreakdown = async (req, res) => {
                     const day = String(date.getDate()).padStart(2, '0');
                     return `${year}-${month}-${day} 00:00:00`;
                 };
-                
+
                 const startStr = formatDateTime(dateStart);
                 const endStr = formatDateTime(dateEnd);
                 transactionDateRange = `AND t.CD >= '${startStr}' AND t.CD < '${endStr}'`;
@@ -2283,7 +2283,7 @@ exports.getExpenditureBreakdown = async (req, res) => {
                 vehicleExpenseDateRange = `AND ve.CD >= '${startStr}' AND ve.CD < '${endStr}'`;
             }
         }
-        
+
         const expenditureBreakdown = [];
 
         // 1. Personal and Business expenses from expenses table
@@ -2746,7 +2746,7 @@ exports.deleteProject = async (req, res) => {
 
     try {
 
-       
+
         const [result] = await db.execute('Delete FROM projects WHERE project_id = ?', [id]);
         await db.execute('Delete FROM userprojects WHERE projectid = ?', [id]);
         res.json(result[0]);
@@ -2960,12 +2960,12 @@ exports.updateProject = async (req, res) => {
     const coveredarea = req.body.coveredarea;
     const type = req.body.type;
 
-   
+
 
     try {
 
         const [rows] = await db.execute('SELECT * FROM projects WHERE project_name = ? and project_id!=?', [
-            project_name,id
+            project_name, id
         ]);
         if (rows.length != 0) {
 
@@ -2994,54 +2994,54 @@ exports.updateProject = async (req, res) => {
                 id
             ];
             const [result] = await db.execute(query, params);
-            
-            if(status=='Completed'){
-               
+
+            if (status == 'Completed') {
+
                 const [rows_restore] = await db.execute('SELECT projectid FROM restore_investment WHERE projectid=?', [
                     id
                 ]);
                 if (rows_restore.length != 0) {
-                    res.status(200).json({message:'Updated Successfully.'});
+                    res.status(200).json({ message: 'Updated Successfully.' });
                 }
-                else{
+                else {
 
                     const [rows_contribution] = await db.execute('SELECT investorid,contributions FROM contributors WHERE projectid=?', [
                         id
                     ]);
                     if (rows_contribution.length != 0) {
-                        
-                        
+
+
                         const res_inv = rows_contribution.map(row => ({
                             investorid: row.investorid,
                             contributions: row.contributions,
-                            
+
                         }));
                         //console.log(res_inv);
                         res_inv.forEach(async element => {
-                        // console.log(element.investorid+' '+element.contributions);
-                         const [restoreinvst] =  await db.execute('INSERT INTO restore_investment (projectid, investorid,amount) VALUES (?,?,?)',
-                                 [id, element.investorid,element.contributions]);
-                           
-                      });
+                            // console.log(element.investorid+' '+element.contributions);
+                            const [restoreinvst] = await db.execute('INSERT INTO restore_investment (projectid, investorid,amount) VALUES (?,?,?)',
+                                [id, element.investorid, element.contributions]);
+
+                        });
                     }
 
                 }
-               
-            }
-            else if(status!='Completed'){
-               
-                    const [result] = await db.execute('Delete FROM restore_investment WHERE projectid = ?', [id]);
-                    res.status(200).json({message:'Updated Successfully.'});
-                
 
             }
-           
+            else if (status != 'Completed') {
 
-            
+                const [result] = await db.execute('Delete FROM restore_investment WHERE projectid = ?', [id]);
+                res.status(200).json({ message: 'Updated Successfully.' });
+
+
+            }
+
+
+
             // const [data] = await db.execute('SELECT * FROM projects WHERE project_id = ?', [
             //     result.insertId,
             // ]);
-           
+
 
         }
     } catch (err) {
@@ -3091,16 +3091,16 @@ exports.assignProjecttoUsers = async (req, res) => {
 // Get Today's Rent Payments
 exports.getTodayRentPayments = async (req, res) => {
     const db = require('../models/db');
-    
+
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -3129,7 +3129,7 @@ exports.getTodayRentPayments = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -3137,10 +3137,10 @@ exports.getTodayRentPayments = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         const [rows] = await db.execute(`
             SELECT 
                 vr.id,
@@ -3165,7 +3165,7 @@ exports.getTodayRentPayments = async (req, res) => {
               AND vr.CD >= ? AND vr.CD < ?
             ORDER BY vr.CD DESC
         `, [startStr, endStr]);
-        
+
         res.json(rows || []);
     } catch (err) {
         console.error('Error fetching rent payments:', err);
@@ -3176,16 +3176,16 @@ exports.getTodayRentPayments = async (req, res) => {
 // Get Payments to Dealers (filtered by date range)
 exports.getTodayDealerPayments = async (req, res) => {
     const db = require('../models/db');
-    
+
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -3214,7 +3214,7 @@ exports.getTodayDealerPayments = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -3222,10 +3222,10 @@ exports.getTodayDealerPayments = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         const [rows] = await db.execute(`
             SELECT 
                 p.id,
@@ -3252,7 +3252,7 @@ exports.getTodayDealerPayments = async (req, res) => {
               AND p.CD >= ? AND p.CD < ?
             ORDER BY p.CD DESC
         `, [startStr, endStr]);
-        
+
         res.json(rows || []);
     } catch (err) {
         console.error('Error fetching dealer payments:', err);
@@ -3263,16 +3263,16 @@ exports.getTodayDealerPayments = async (req, res) => {
 // Get Recoveries (filtered by date range)
 exports.getTodayRecoveries = async (req, res) => {
     const db = require('../models/db');
-    
+
     try {
         const { filter } = req.query; // Get filter from query params: 'daily', 'weekly', 'monthly', 'yearly'
-        
+
         // Calculate date range based on filter
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         let dateStart = null;
         let dateEnd = null;
-        
+
         switch (filter) {
             case 'daily':
                 dateStart = today;
@@ -3301,7 +3301,7 @@ exports.getTodayRecoveries = async (req, res) => {
                 dateEnd = new Date(today);
                 dateEnd.setDate(dateEnd.getDate() + 1);
         }
-        
+
         // Format dates for MySQL (YYYY-MM-DD HH:MM:SS)
         const formatDateTime = (date) => {
             const year = date.getFullYear();
@@ -3309,10 +3309,10 @@ exports.getTodayRecoveries = async (req, res) => {
             const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day} 00:00:00`;
         };
-        
+
         const startStr = formatDateTime(dateStart);
         const endStr = formatDateTime(dateEnd);
-        
+
         const [rows] = await db.execute(`
             SELECT 
                 r.id,
@@ -3336,7 +3336,7 @@ exports.getTodayRecoveries = async (req, res) => {
               AND r.CD >= ? AND r.CD < ?
             ORDER BY r.CD DESC
         `, [startStr, endStr]);
-        
+
         res.json(rows || []);
     } catch (err) {
         console.error('Error fetching recoveries:', err);

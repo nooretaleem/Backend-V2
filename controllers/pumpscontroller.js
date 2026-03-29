@@ -1,5 +1,111 @@
 const db = require('../models/db');
 
+async function upsertMobileOilPurchaseRows(connection, { pumpId, stockItems, actorName }) {
+  const rows = Array.isArray(stockItems) ? stockItems : [];
+  const normalizedRows = rows
+    .map((row) => {
+      const containerType = String(row?.container_type || '').trim().toLowerCase();
+      const normalizedContainerType = ['carton', 'can', 'drum', 'dew'].includes(containerType)
+        ? containerType
+        : null;
+      const containerLiters = row?.container_liters != null ? Number(row.container_liters) : null;
+      const count = row?.count != null ? Number(row.count) : null;
+      const totalLiters = Number(row?.total_liters || 0);
+      const ratePerLiter = row?.rate_per_liter != null ? Number(row.rate_per_liter) : null;
+      const totalAmount = row?.total_amount != null ? Number(row.total_amount) : null;
+
+      return {
+        container_type: normalizedContainerType,
+        container_liters: Number.isFinite(containerLiters) ? containerLiters : null,
+        no_of_containers: Number.isFinite(count) ? count : null,
+        liters_purchased: Number.isFinite(totalLiters) ? totalLiters : 0,
+        rate_per_liter: Number.isFinite(ratePerLiter) ? ratePerLiter : null,
+        total_amount: Number.isFinite(totalAmount) ? totalAmount : null
+      };
+    })
+    .filter((row) => row.container_type && row.liters_purchased > 0);
+
+  if (normalizedRows.length === 0) {
+    return;
+  }
+
+  // Fetch latest mobile oil rate if not provided in stock item
+  let defaultRate = 0;
+  try {
+    const [rateRows] = await connection.execute(
+      `SELECT rate_per_liter FROM fuel_rates 
+       WHERE fuel_type_id = 3 AND (Active = 1 OR Active IS NULL)
+       ORDER BY effective_date DESC LIMIT 1`
+    );
+    if (rateRows && rateRows.length > 0) {
+      defaultRate = Number(rateRows[0].rate_per_liter || 0);
+    }
+  } catch (err) {
+    console.warn('Could not fetch mobile oil rate from fuel_rates:', err.message);
+  }
+
+  const [columnRows] = await connection.execute(`SHOW COLUMNS FROM mobile_oil_purchase`);
+  const availableColumns = new Set((columnRows || []).map((c) => String(c.Field || '').toLowerCase()));
+
+  // For updates, deactivate previous rows when table supports pump linkage.
+  if (availableColumns.has('pump_id')) {
+    await connection.execute(
+      `UPDATE mobile_oil_purchase SET active = 0, md = NOW(), mb = ? WHERE pump_id = ? AND (active = 1 OR active IS NULL)`,
+      [actorName, pumpId]
+    );
+  }
+
+  for (const row of normalizedRows) {
+    const columns = [];
+    const values = [];
+    const placeholders = [];
+
+    const maybeAdd = (column, value) => {
+      if (availableColumns.has(column)) {
+        columns.push(column);
+        values.push(value);
+        placeholders.push('?');
+      }
+    };
+
+    // Use rate from stock item, or default to latest from fuel_rates
+    const finalRate = row.rate_per_liter != null ? row.rate_per_liter : defaultRate;
+    const finalTotal = row.total_amount != null ? row.total_amount : (row.liters_purchased * finalRate);
+
+    maybeAdd('pump_id', pumpId);
+    maybeAdd('liters_purchased', row.liters_purchased);
+    maybeAdd('rate_per_liter', finalRate);
+    maybeAdd('total_amount', finalTotal);
+    maybeAdd('container_type', row.container_type);
+    maybeAdd('container_liters', row.container_liters);
+    maybeAdd('no_of_containers', row.no_of_containers);
+    maybeAdd('cb', actorName);
+    maybeAdd('mb', actorName);
+
+    if (availableColumns.has('active')) {
+      columns.push('active');
+      placeholders.push('1');
+    }
+    if (availableColumns.has('cd')) {
+      columns.push('cd');
+      placeholders.push('NOW()');
+    }
+    if (availableColumns.has('md')) {
+      columns.push('md');
+      placeholders.push('NOW()');
+    }
+
+    if (columns.length === 0) {
+      continue;
+    }
+
+    await connection.execute(
+      `INSERT INTO mobile_oil_purchase (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`,
+      values
+    );
+  }
+}
+
 exports.getTankTypes = async (req, res) => {
   try {
     let rows = [];
@@ -32,6 +138,94 @@ exports.getTankTypes = async (req, res) => {
     })));
   } catch (err) {
     console.error('Error fetching tank types:', err);
+    if (err.code === 'ER_NO_SUCH_TABLE') {
+      return res.json([]);
+    }
+    res.status(500).json({ message: 'Server Error', error: err.message });
+  }
+};
+
+exports.getMobileOilRate = async (req, res) => {
+  try {
+    // Get latest fuel rate for Mobile Oil (fuel_type_id = 3) with Active = 1
+    const [rateRows] = await db.execute(
+      `SELECT rate_per_liter, effective_date 
+       FROM fuel_rates 
+       WHERE fuel_type_id = 3 AND (Active = 1 OR Active IS NULL)
+       ORDER BY effective_date DESC 
+       LIMIT 1`
+    );
+
+    if (rateRows && rateRows.length > 0) {
+      const rate = rateRows[0];
+      return res.json({
+        rate_per_liter: Number(rate.rate_per_liter || 0),
+        effective_date: rate.effective_date || new Date().toISOString().split('T')[0]
+      });
+    }
+
+    // Default to 0 if no rate found
+    res.json({
+      rate_per_liter: 0,
+      effective_date: new Date().toISOString().split('T')[0]
+    });
+  } catch (err) {
+    console.error('Error fetching mobile oil rate:', err);
+    res.status(500).json({
+      rate_per_liter: 0,
+      effective_date: new Date().toISOString().split('T')[0]
+    });
+  }
+};
+
+exports.getMobileOilStockItems = async (req, res) => {
+  try {
+    const { pump_id } = req.query;
+    if (!pump_id) {
+      return res.json([]);
+    }
+
+    // Get active mobile oil purchase records for the pump
+    const [rows] = await db.execute(
+      `SELECT 
+        id,
+        pump_id,
+        liters_purchased,
+        rate_per_liter,
+        total_amount,
+        container_type,
+        container_liters,
+        no_of_containers,
+        active,
+        cd,
+        md,
+        cb,
+        mb
+       FROM mobile_oil_purchase
+       WHERE pump_id = ? AND (active = 1 OR active IS NULL)
+       ORDER BY cd DESC`,
+      [pump_id]
+    );
+
+    const stockItems = (rows || []).map((row) => ({
+      id: Number(row.id),
+      pump_id: Number(row.pump_id),
+      liters_purchased: Number(row.liters_purchased || 0),
+      rate_per_liter: Number(row.rate_per_liter || 0),
+      total_amount: Number(row.total_amount || 0),
+      container_type: String(row.container_type || '').toLowerCase(),
+      container_liters: Number(row.container_liters || 0),
+      no_of_containers: Number(row.no_of_containers || 0),
+      active: Number(row.active || 1),
+      cd: row.cd,
+      md: row.md,
+      cb: row.cb,
+      mb: row.mb
+    }));
+
+    res.json(stockItems);
+  } catch (err) {
+    console.error('Error fetching mobile oil stock items:', err);
     if (err.code === 'ER_NO_SUCH_TABLE') {
       return res.json([]);
     }
@@ -188,6 +382,7 @@ exports.createPump = async (req, res) => {
   const pump = payload.pump || {};
   const tanks = Array.isArray(payload.tanks) ? payload.tanks : [];
   const machines = Array.isArray(payload.machines) ? payload.machines : [];
+  const mobileOilStockItems = Array.isArray(payload.mobileOilStockItems) ? payload.mobileOilStockItems : [];
 
   let conn;
   try {
@@ -287,6 +482,12 @@ exports.createPump = async (req, res) => {
       }
     }
 
+    await upsertMobileOilPurchaseRows(conn, {
+      pumpId,
+      stockItems: mobileOilStockItems,
+      actorName: CB
+    });
+
     await conn.commit();
 
     res.json({
@@ -320,6 +521,7 @@ exports.updatePump = async (req, res) => {
   const pumpId = payload.id || pump.id;
   const tanks = Array.isArray(payload.tanks) ? payload.tanks : [];
   const machines = Array.isArray(payload.machines) ? payload.machines : [];
+  const mobileOilStockItems = Array.isArray(payload.mobileOilStockItems) ? payload.mobileOilStockItems : [];
 
   // Support legacy format (direct fields in body)
   const name = pump.name || payload.name;
@@ -889,6 +1091,12 @@ exports.updatePump = async (req, res) => {
         if (staffErr.code !== 'ER_NO_SUCH_TABLE') throw staffErr;
       }
     }
+
+    await upsertMobileOilPurchaseRows(conn, {
+      pumpId,
+      stockItems: mobileOilStockItems,
+      actorName: MB
+    });
 
     await conn.commit();
 

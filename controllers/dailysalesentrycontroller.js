@@ -480,18 +480,65 @@ exports.submitDailyEntry = async (req, res) => {
       );
     }
 
-    // 4. Mobile oil cash sales
-    const mobileOil = body.mobile_oil_cash_sales || {};
-    if (mobileOil.liters_sold > 0 || mobileOil.total_amount > 0) {
-      const litersSold = mobileOil.liters_sold ?? 0;
-      const ratePerLiter = mobileOil.rate_per_liter ?? body.rates?.mobileOil ?? 0;
-      const totalAmount = mobileOil.total_amount ?? litersSold * ratePerLiter;
+    // 4. Mobile oil cash sales (supports single record or multiple rows)
+    const mobileOilRows = Array.isArray(body.mobile_oil_cash_sales)
+      ? body.mobile_oil_cash_sales
+      : (body.mobile_oil_cash_sales ? [body.mobile_oil_cash_sales] : []);
+
+    for (const mobileOil of mobileOilRows) {
+      const litersSold = Number(mobileOil?.liters_sold ?? 0) || 0;
+      const ratePerLiter = Number(mobileOil?.rate_per_liter ?? body.rates?.mobileOil ?? 0) || 0;
+      if (litersSold <= 0 && ratePerLiter <= 0) {
+        continue;
+      }
+
+      // Always calculate on server to keep total_amount consistent with liters/rate.
+      const totalAmount = litersSold * ratePerLiter;
+
+      const rawContainerType = String(mobileOil?.container_type || '').trim().toLowerCase();
+      const containerType = ['carton', 'can', 'drum', 'dew'].includes(rawContainerType) ? rawContainerType : null;
+      const containerLiters = Number(mobileOil?.container_liters ?? 0) || null;
+      const noOfContainers = Number(mobileOil?.no_of_containers ?? 0) || null;
 
       await connection.execute(
-        `INSERT INTO mobile_oil_cash_sales (daily_entry_id, liters_sold, rate_per_liter, total_amount, cd, md, CB, MB, Active)
-         VALUES (?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
-        [dailyEntryId, litersSold, ratePerLiter, totalAmount, cb, mb]
+        `INSERT INTO mobile_oil_cash_sales
+          (daily_entry_id, liters_sold, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, cd, md, CB, MB, Active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
+        [dailyEntryId, litersSold, ratePerLiter, totalAmount, containerType, containerLiters, noOfContainers, cb, mb]
       );
+
+      // Also record in mobile_oil_purchase for stock tracking
+      if (pumpId && litersSold > 0) {
+        await connection.execute(
+          `INSERT INTO mobile_oil_purchase
+            (pump_id, liters_purchased, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, active, cd, md, cb, mb)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW(), ?, ?)`,
+          [pumpId, litersSold, ratePerLiter, totalAmount, containerType, containerLiters, noOfContainers, cb, mb]
+        );
+      }
+    }
+
+    // Deduct total mobile oil cash sales from fuel_tanks
+    if (mobileOilRows.length > 0 && pumpId) {
+      const totalMobileOilLitersSold = mobileOilRows.reduce(
+        (sum, mo) => sum + (Number(mo?.liters_sold ?? 0) || 0), 0
+      );
+      if (totalMobileOilLitersSold > 0) {
+        const [mobileOilTanks] = await connection.execute(
+          `SELECT id, current_level FROM fuel_tanks
+           WHERE pump_id = ? AND Active = 1 AND LOWER(fuel_type) LIKE '%mobile%'
+           ORDER BY id ASC LIMIT 1`,
+          [pumpId]
+        );
+        if (mobileOilTanks && mobileOilTanks.length > 0) {
+          const tank = mobileOilTanks[0];
+          const newLevel = Math.max(0, Number(tank.current_level || 0) - totalMobileOilLitersSold);
+          await connection.execute(
+            `UPDATE fuel_tanks SET current_level = ?, MB = ?, MD = NOW() WHERE id = ? AND Active = 1`,
+            [newLevel, mb, tank.id]
+          );
+        }
+      }
     }
 
     // 5. Daily expenses
@@ -580,15 +627,41 @@ exports.submitDailyEntry = async (req, res) => {
 
     const bankTransfer = body.bank_transfer || {};
     if (cashOutflowBank > 0 || (bankTransfer.bankName && bankTransfer.bankName.trim())) {
+      const selectedAccountId = bankTransfer.accountId != null && bankTransfer.accountId !== ''
+        ? Number(bankTransfer.accountId)
+        : null;
+
+      let bankNameForInsert = (bankTransfer.bankName || '').trim() || 'N/A';
+      let accountTitleForInsert = (bankTransfer.accountTitle || '').trim() || null;
+      let accountNumberForInsert = (bankTransfer.accountNumber || '').trim() || null;
+
+      // Prefer authoritative account/bank names from DB when AccountID is provided from dropdown.
+      if (selectedAccountId && Number.isFinite(selectedAccountId)) {
+        const [[accountRow]] = await connection.execute(
+          `SELECT a.AccountTitle, a.AccountNo, b.Name AS BankName
+           FROM accounts a
+           LEFT JOIN bank b ON b.ID = a.BankID
+           WHERE a.ID = ?
+           LIMIT 1`,
+          [selectedAccountId]
+        );
+
+        if (accountRow) {
+          bankNameForInsert = String(accountRow.BankName || bankNameForInsert).trim() || 'N/A';
+          accountTitleForInsert = String(accountRow.AccountTitle || accountTitleForInsert || '').trim() || null;
+          accountNumberForInsert = String(accountRow.AccountNo || accountNumberForInsert || '').trim() || null;
+        }
+      }
+
       await connection.execute(
         `INSERT INTO cash_outflow_bank (cash_management_id, amount, bank_name, account_title, account_number, transaction_type, transaction_ref, reason, CB, MB, CD, MD, Active)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 1)`,
         [
           cashManagementId,
           cashOutflowBank,
-          (bankTransfer.bankName || '').trim() || 'N/A',
-          (bankTransfer.accountTitle || '').trim() || null,
-          (bankTransfer.accountNumber || '').trim() || null,
+          bankNameForInsert,
+          accountTitleForInsert,
+          accountNumberForInsert,
           (bankTransfer.transactionType || 'Cash Deposit').trim(),
           (bankTransfer.transactionReference || '').trim() || null,
           (bankTransfer.reason || '').trim() || null,
@@ -596,17 +669,49 @@ exports.submitDailyEntry = async (req, res) => {
           mb
         ]
       );
+
+      // Mirror bank outflow in transactions table for audit trail.
+      // Keep trip_id and cash_in_hand_id NULL as requested.
+      await connection.execute(
+        `INSERT INTO transactions
+          (trip_id, cash_in_hand_id, PaymentMode, ReferenceNo, Purpose, Debit, Credit, AccountID, Date, CD, CB, MD, Active)
+         VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), 1)`,
+        [
+          (bankTransfer.transactionType || 'Cash Deposit').trim(),
+          (bankTransfer.transactionReference || '').trim() || null,
+          (bankTransfer.reason || 'Bank Transfer/Deposit from Daily Sales Entry').trim(),
+          0,
+          cashOutflowBank,
+          (selectedAccountId && Number.isFinite(selectedAccountId)) ? selectedAccountId : null,
+          entryDate,
+          cb
+        ]
+      );
     }
 
     const ownerWithdrawal = body.owner_withdrawal || {};
+    console.log('ownerWithdrawal:', ownerWithdrawal, 'cashOutflowOwner:', cashOutflowOwner);
     if (cashOutflowOwner > 0 || (ownerWithdrawal.personName && ownerWithdrawal.personName.trim())) {
-      await connection.execute(
+      const ownerPersonTypeRaw = String(ownerWithdrawal.personType || '').trim();
+      const hasDealerId = ownerWithdrawal.dealerId != null && ownerWithdrawal.dealerId !== '';
+      const ownerPersonTypeKey = (ownerPersonTypeRaw || (hasDealerId ? 'dealer' : 'owner')).toLowerCase();
+      console.log('hasDealerID= ' + hasDealerId + ' ownerPersonTypeRaw= ' + ownerPersonTypeRaw + ' ownerPersonTypeKey= ' + ownerPersonTypeKey);
+      const ownerPersonType = ownerPersonTypeKey === 'dealer'
+        ? 'Dealer'
+        : ownerPersonTypeKey === 'manager'
+          ? 'Manager'
+          : ownerPersonTypeKey === 'other'
+            ? 'Other'
+            : 'Owner';
+      const ownerWithdrawalPersonName = (ownerWithdrawal.personName || '').trim();
+
+      const [ownerOutflowResult] = await connection.execute(
         `INSERT INTO cash_outflow_owner (cash_management_id, amount, person_type, person_name, purpose, notes, approved_by, CB, MB, CD, MD, Active)
          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NOW(), NOW(), 1)`,
         [
           cashManagementId,
           cashOutflowOwner,
-          (ownerWithdrawal.personType || 'Owner').trim(),
+          ownerPersonType,
           (ownerWithdrawal.personName || '').trim() || 'N/A',
           (ownerWithdrawal.purpose || '').trim() || null,
           (ownerWithdrawal.notes || '').trim() || null,
@@ -614,6 +719,105 @@ exports.submitDailyEntry = async (req, res) => {
           mb
         ]
       );
+
+      // Defensive fix: keep DB person_type consistent for dealer withdrawals.
+      // Some older clients may send inconsistent owner_withdrawal.personType values.
+      if (ownerPersonTypeKey === 'dealer' || hasDealerId) {
+        const ownerOutflowId = Number(ownerOutflowResult?.insertId || 0);
+        if (ownerOutflowId > 0) {
+          await connection.execute(
+            `UPDATE cash_outflow_owner SET person_type = 'Dealer', MD = NOW() WHERE id = ?`,
+            [ownerOutflowId]
+          );
+        }
+      }
+
+      // For Dealer withdrawal, increase dealer credit (pool + depo balance).
+      if (cashOutflowOwner > 0 && ownerPersonType.toLowerCase() === 'dealer') {
+        const dealerId = ownerWithdrawal.dealerId != null && ownerWithdrawal.dealerId !== ''
+          ? Number(ownerWithdrawal.dealerId)
+          : null;
+
+        if (dealerId && Number.isFinite(dealerId)) {
+          // Get oldest trip linked with this dealer(depo).
+          const [tripRows] = await connection.execute(
+            `SELECT t.id
+             FROM trips t
+             INNER JOIN trip_depos td ON td.trip_id = t.id AND td.active = 1
+             WHERE td.depo_id = ?
+               AND t.active = 1
+             ORDER BY t.id ASC
+             LIMIT 1`,
+            [dealerId]
+          );
+          const oldestTripId = tripRows.length > 0 ? Number(tripRows[0].id) : null;
+
+          const [depoRows] = await connection.execute(
+            `SELECT Balance FROM depo WHERE id = ? AND active = 1 LIMIT 1`,
+            [dealerId]
+          );
+
+          if (depoRows.length > 0) {
+            const currentDepoBalance = Number(depoRows[0].Balance || 0);
+            const updatedDepoBalance = currentDepoBalance + cashOutflowOwner;
+
+            const [poolRows] = await connection.execute(
+              `SELECT DepoLimit FROM pool WHERE DepoID = ? AND active = 1 ORDER BY ID DESC LIMIT 1`,
+              [dealerId]
+            );
+
+            const previousDepoLimit = poolRows.length > 0
+              ? Number(poolRows[0].DepoLimit || 0)
+              : currentDepoBalance;
+            const newDepoLimit = previousDepoLimit + cashOutflowOwner;
+
+            await connection.execute(
+              `INSERT INTO pool
+                 (DepoID, TripID, Debit, Credit, Date, DepoLimit, payment_id, recovery_id, CD, CB, MD, active)
+               VALUES (?, ?, 0, ?, ?, ?, NULL, NULL, NOW(), ?, NOW(), 1)`,
+              [
+                dealerId,
+                oldestTripId,
+                cashOutflowOwner,
+                entryDate,
+                newDepoLimit,
+                cb
+              ]
+            );
+
+            const dealerTransactionPurpose = ownerWithdrawalPersonName
+              ? `Payment to ${ownerWithdrawalPersonName}`
+              : 'Payment to Dealer';
+
+            const [txnResult] = await connection.execute(
+              `INSERT INTO transactions
+                 (trip_id, cash_in_hand_id, PaymentMode, ReferenceNo, Purpose, Debit, Credit, AccountID, Date, CD, CB, MD, Active)
+               VALUES (?, NULL, ?, NULL, ?, 0, ?, NULL, ?, NOW(), ?, NOW(), 1)`,
+              [
+                oldestTripId,
+                'Cash Deposit',
+                dealerTransactionPurpose,
+                cashOutflowOwner,
+                entryDate,
+                cb
+              ]
+            );
+
+            const newTransactionId = txnResult.insertId;
+
+            await connection.execute(
+              `INSERT INTO payments (transactionID, DepoID, trip_id, Amount, Date, active)
+               VALUES (?, ?, ?, ?, ?, 1)`,
+              [newTransactionId, dealerId, oldestTripId, cashOutflowOwner, entryDate]
+            );
+
+            await connection.execute(
+              `UPDATE depo SET Balance = ?, MD = NOW() WHERE id = ?`,
+              [updatedDepoBalance, dealerId]
+            );
+          }
+        }
+      }
     }
 
     // 9. Credit sales

@@ -92,6 +92,8 @@ router.get('/getTodayRecoveries', projectController.getTodayRecoveries);
 // Petrol Pumps
 router.get('/getPumps', pumpsController.getPumps);
 router.get('/getTankTypes', pumpsController.getTankTypes);
+router.get('/getMobileOilRate', pumpsController.getMobileOilRate);
+router.get('/getMobileOilStockItems', pumpsController.getMobileOilStockItems);
 router.get('/getPumpDetails', pumpsController.getPumpDetails);
 router.get('/getTankInventory', pumpsController.getTankInventory);
 router.get('/getDipVolumeByType', pumpsController.getDipVolumeByType);

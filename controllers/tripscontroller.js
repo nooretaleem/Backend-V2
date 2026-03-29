@@ -3155,11 +3155,12 @@ exports.addSale = async (req, res) => {
                     });
                 }
             } else {
-                // For Can/Drum, Qty should be whole number >= 500
-                if (qty < 500) {
+                // For Can/Drum, enforce 500L minimum unless user sells exact available quantity.
+                const isExactAvailableSale = Math.abs(qty - availableQuantity) <= 0.0001;
+                if (qty < 500 && !isExactAvailableSale) {
                     await connection.rollback();
                     return res.status(400).json({
-                        message: 'Quantity must be at least 500 for Can/Drum'
+                        message: 'Quantity must be at least 500 for Can/Drum unless selling the exact available quantity'
                     });
                 }
                 if (qty > availableQuantity) {
@@ -3237,6 +3238,37 @@ exports.addSale = async (req, res) => {
                     console.log(`[Tank Stock] ✗ Trip product ${trip_product_id} not found`);
                 } else {
                     const product_type = fuelProductRows[0].product_type;
+
+                    // For Self customer mobile oil sales, keep purchase-side tracking in mobile_oil_purchase.
+                    if ((product_type || '').toLowerCase() === 'mobile/lube oil') {
+                        const normalizedContainerType = String(container_type || '').trim().toLowerCase();
+                        const purchaseContainerType = ['carton', 'cotton', 'can', 'drum'].includes(normalizedContainerType)
+                            ? normalizedContainerType
+                            : null;
+                        const purchaseContainerLiters = purchaseContainerType === 'carton' || purchaseContainerType === 'cotton'
+                            ? (Number(capacity) || null)
+                            : null;
+                        const purchaseNoOfContainers = purchaseContainerType === 'carton' || purchaseContainerType === 'cotton'
+                            ? (Number(qty) || null)
+                            : null;
+
+                        await connection.execute(
+                            `INSERT INTO mobile_oil_purchase
+                                (liters_purchased, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, cd, md, cb, mb, active)
+                             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
+                            [
+                                requestedFuel,
+                                Number(rate),
+                                Number(total_amount),
+                                purchaseContainerType,
+                                purchaseContainerLiters,
+                                purchaseNoOfContainers,
+                                CB,
+                                CB
+                            ]
+                        );
+                    }
+
                     let fuelTypeName = product_type;
                     if (product_type === 'Mobile/Lube Oil') fuelTypeName = 'Mobile Oil';
                     if (product_type === 'PMG') fuelTypeName = 'Petrol';
