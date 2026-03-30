@@ -83,6 +83,8 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
   }
 
   const soldByFuel = { petrol: 0, diesel: 0, mobileOil: 0 };
+  const tanksByFuel = { petrol: [], diesel: [], mobileOil: [] };
+  const unallocatedByFuel = {};
 
   for (const machine of machines || []) {
     for (const nozzle of machine.nozzles || []) {
@@ -116,13 +118,6 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
      ORDER BY ft.fuel_type, ft.tank_number, ft.id`,
     [dailyEntryId, pumpId]
   );
-
-  const tanksByFuel = {
-    petrol: [],
-    diesel: [],
-    mobileOil: []
-  };
-  const unallocatedByFuel = {};
 
   for (const row of tankRows || []) {
     const fuelKey = normalizeTankFuelKey(row.fuel_type);
@@ -176,7 +171,6 @@ async function syncTankInventoryAndStockForDailyEntry(connection, {
       unallocatedByFuel[fuelKey] = exceededQty;
 
       // Store exceeded sold quantity as negative variance on this fuel's last tank for the day.
-      // This keeps a persisted audit trail of stock shortfall tied to daily_tank_inventory.
       const varianceTank = fuelTanks.length > 0 ? fuelTanks[fuelTanks.length - 1] : null;
       if (varianceTank && varianceTank.tank_id) {
         await connection.execute(
@@ -933,16 +927,9 @@ exports.getNozzleReadingsByDate = async (req, res) => {
     );
     //console.log('getNozzleReadingsByDate dailyEntries:', dailyEntries);
 
-    // If no daily entry exists for this date, return empty machines
-    if (!dailyEntries || dailyEntries.length === 0) {
-      console.log('getNozzleReadingsByDate: No daily entry found for date:', entryDate);
-      connection.release();
-      return res.status(200).json({ machines: [], dailyEntryId: null, cdDateTime: null });
-    }
-
-    // Get the daily entry ID and CD datetime
-    const dailyEntryId = dailyEntries[0].id;
-    const cdDateTime = dailyEntries[0].cd;
+    // Get the daily entry ID and CD datetime if exists; keep null for new entry flow
+    const dailyEntryId = (dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].id : null;
+    const cdDateTime = (dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].cd : null;
 
     // Get all machines and their nozzles for this pump
     const [pumpsData] = await connection.execute(
@@ -969,16 +956,18 @@ exports.getNozzleReadingsByDate = async (req, res) => {
       return res.status(200).json({ machines: [] });
     }
 
-    // Get nozzle readings for the daily entry (we already confirmed it exists)
+    // Get nozzle readings for this daily entry only if it exists
     let readings = [];
-    const [readingsData] = await connection.execute(
-      `SELECT nozzle_id, opening_digital_reading, opening_mechanical_reading, 
-              closing_digital_reading, closing_mechanical_reading
-       FROM nozzle_readings
-       WHERE daily_entry_id = ? AND Active = 1`,
-      [dailyEntryId]
-    );
-    readings = readingsData;
+    if (dailyEntryId) {
+      const [readingsData] = await connection.execute(
+        `SELECT nozzle_id, opening_digital_reading, opening_mechanical_reading,
+                closing_digital_reading, closing_mechanical_reading
+         FROM nozzle_readings
+         WHERE daily_entry_id = ? AND Active = 1`,
+        [dailyEntryId]
+      );
+      readings = readingsData;
+    }
     //console.log('getNozzleReadingsByDate readings:', readings);
     connection.release();
 
@@ -998,22 +987,22 @@ exports.getNozzleReadingsByDate = async (req, res) => {
       // Find reading for this nozzle from nozzle_readings table
       const reading = readings.find(r => r.nozzle_id === row.nozzle_id);
 
-      // If we have a reading from nozzle_readings, use it; otherwise fall back to nozzles table current readings
+      // Opening fallback for missing nozzle_readings is nozzles.initial_* as requested.
       machinesMap[row.machine_id].nozzles.push({
         id: row.nozzle_id,
         name: `Nozzle ${row.nozzle_number}`,
         oldDigital: reading
           ? (reading.opening_digital_reading != null ? Number(reading.opening_digital_reading) : null)
-          : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : null),
+          : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : (row.current_reading_digital != null ? Number(row.current_reading_digital) : null)),
         newDigital: reading
           ? (reading.closing_digital_reading != null ? Number(reading.closing_digital_reading) : null)
-          : (row.current_reading_digital != null ? Number(row.current_reading_digital) : null),
+          : (row.current_reading_digital != null ? Number(row.current_reading_digital) : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : null)),
         oldMech: reading
           ? (reading.opening_mechanical_reading != null ? Number(reading.opening_mechanical_reading) : null)
-          : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : null),
+          : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : (row.current_reading_mechanical != null ? Number(row.current_reading_mechanical) : null)),
         newMech: reading
           ? (reading.closing_mechanical_reading != null ? Number(reading.closing_mechanical_reading) : null)
-          : (row.current_reading_mechanical != null ? Number(row.current_reading_mechanical) : null),
+          : (row.current_reading_mechanical != null ? Number(row.current_reading_mechanical) : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : null)),
         isEditing: false
       });
     });
@@ -1035,7 +1024,8 @@ exports.getNozzleReadingsByDate = async (req, res) => {
  */
 exports.updateNozzleReadings = async (req, res) => {
   try {
-    const { daily_entry_id, readings } = req.body;
+    const { daily_entry_id, readings, CB } = req.body;
+    const CreatedBy = CB || 'System';
 
     if (!daily_entry_id || !readings || !Array.isArray(readings)) {
       return res.status(400).json({ message: 'daily_entry_id and readings array are required' });
@@ -1068,19 +1058,20 @@ exports.updateNozzleReadings = async (req, res) => {
                  closing_digital_reading = ?, 
                  opening_mechanical_reading = ?, 
                  closing_mechanical_reading = ?,
+                 mb = ?,
                  md = NOW()
              WHERE id = ?`,
-            [opening_digital_reading, closing_digital_reading, opening_mechanical_reading, closing_mechanical_reading, existingReading[0].id]
+            [opening_digital_reading, closing_digital_reading, opening_mechanical_reading, closing_mechanical_reading, CreatedBy, existingReading[0].id]
           );
         } else {
           // Insert new reading (shouldn't happen normally but handle it)
           await connection.execute(
             `INSERT INTO nozzle_readings 
              (daily_entry_id, nozzle_id, opening_digital_reading, closing_digital_reading, 
-              opening_mechanical_reading, closing_mechanical_reading, cd, md, Active) 
-             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), 1)`,
+              opening_mechanical_reading, closing_mechanical_reading, cd, md, cb, mb, Active) 
+             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
             [daily_entry_id, nozzle_id, opening_digital_reading, closing_digital_reading,
-              opening_mechanical_reading, closing_mechanical_reading]
+              opening_mechanical_reading, closing_mechanical_reading, CreatedBy, CreatedBy]
           );
         }
       }
@@ -1162,20 +1153,17 @@ exports.getExpensesByDate = async (req, res) => {
       [dailyEntryId]
     );
 
-    console.log('getExpensesByDate: Found', expenses.length, 'expenses');
-
     return res.status(200).json({
       dailyEntryId,
       cdDateTime,
-      expenses: expenses.map(exp => ({
-        id: exp.id,
-        categoryId: exp.categoryId,
-        categoryName: exp.categoryName,
-        amount: parseFloat(exp.amount || 0),
-        description: exp.description
+      expenses: (expenses || []).map((expense) => ({
+        id: expense.id,
+        categoryId: expense.categoryId,
+        categoryName: expense.categoryName,
+        amount: expense.amount != null ? Number(expense.amount) : 0,
+        description: expense.description || ''
       }))
     });
-
   } catch (err) {
     console.error('getExpensesByDate error:', err);
     return res.status(500).json({ message: 'Server Error', error: err.message });
