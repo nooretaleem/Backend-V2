@@ -904,6 +904,8 @@ exports.getNozzleReadingsByDate = async (req, res) => {
   try {
     let pumpId = req.query.pump_id;
     let entryDate = req.query.entry_date; // Can be various formats
+    const includeNoEntry = String(req.query.include_no_entry || '').trim() === '1'
+      || String(req.query.include_no_entry || '').trim().toLowerCase() === 'true';
     if (!pumpId || !entryDate) {
       return res.status(400).json({ message: 'pump_id and entry_date are required' });
     }
@@ -926,6 +928,11 @@ exports.getNozzleReadingsByDate = async (req, res) => {
       [pumpId, entryDate]
     );
     //console.log('getNozzleReadingsByDate dailyEntries:', dailyEntries);
+
+    if ((!dailyEntries || dailyEntries.length === 0) && !includeNoEntry) {
+      connection.release();
+      return res.status(200).json({ machines: [], dailyEntryId: null, cdDateTime: null });
+    }
 
     // Get the daily entry ID and CD datetime if exists; keep null for new entry flow
     const dailyEntryId = (dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].id : null;
