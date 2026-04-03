@@ -101,6 +101,7 @@ router.get('/checkTodayDipReadings', pumpsController.checkTodayDipReadings);
 router.post('/saveDipReadings', pumpsController.saveDipReadings);
 router.post('/createPump', pumpsController.createPump);
 router.post('/updatePump', pumpsController.updatePump);
+router.post('/deletePump', pumpsController.deletePump);
 
 // Daily Sales Entry (submit full daily entry)
 router.get('/getPreviousDayCash', dailySalesEntryController.getPreviousDayCash);

@@ -1,5 +1,10 @@
 const db = require('../models/db');
 
+function isAdminRole(roleValue) {
+  const normalizedRole = String(roleValue || '').trim().toLowerCase();
+  return normalizedRole.includes('admin') || normalizedRole === '1' || Number(normalizedRole) === 1;
+}
+
 async function upsertMobileOilPurchaseRows(connection, { pumpId, stockItems, actorName }) {
   const rows = Array.isArray(stockItems) ? stockItems : [];
   const normalizedRows = rows
@@ -1122,6 +1127,38 @@ exports.updatePump = async (req, res) => {
     res.status(500).json({ message: 'Server Error', error: err.message });
   } finally {
     if (conn) conn.release();
+  }
+};
+
+exports.deletePump = async (req, res) => {
+  try {
+    const id = Number(req.body?.id);
+    const role = req.body?.role;
+    const MB = req.body?.MB || req.body?.username || 'System';
+
+    if (!id) {
+      return res.status(400).json({ message: 'Pump ID is required' });
+    }
+
+    if (!isAdminRole(role)) {
+      return res.status(403).json({ message: 'Only admin can delete petrol pumps' });
+    }
+
+    const [result] = await db.execute(
+      `UPDATE petrol_pumps
+       SET Active = 0, MB = ?, MD = NOW()
+       WHERE id = ? AND Active = 1`,
+      [MB, id]
+    );
+
+    if (!result || result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Pump not found or already inactive' });
+    }
+
+    return res.status(200).json({ message: 'Pump deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting pump:', err);
+    return res.status(500).json({ message: 'Server Error', error: err.message });
   }
 };
 
