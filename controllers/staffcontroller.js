@@ -372,7 +372,7 @@ exports.addStaffAdvanceRecord = async (req, res) => {
         }
 
         // Validate reason length (max 200 characters)
-        const reasonVal = reason ? reason.trim().substring(0, 200) : null;
+        const reasonVal = reason ? reason.trim().substring(0, 200) : 'Advance Salary';
 
         const cb = CB || req.body.CB || 'System';
         const mb = MB || req.body.MB || cb;

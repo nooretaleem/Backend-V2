@@ -127,20 +127,22 @@ exports.addFuelStationCustomer = async (req, res) => {
         if (!CB) {
             return res.status(400).json({ message: 'CB (Created By - username) is required' });
         }
+        const MB = req.body.MB || CB;
 
         const query = `
             INSERT INTO fuel_station_customer (
                 customer_name, phone_number, customer_type,
-                Active, CB, CD, MD
+                Active, CB, CD, MB, MD
             ) 
-            VALUES (?, ?, ?, 1, ?, NOW(), NOW())
+            VALUES (?, ?, ?, 1, ?, NOW(), ?, NOW())
         `;
 
         const [result] = await db.execute(query, [
             customer_name.trim(),
             phone_number.trim(),
             customer_type.trim(),
-            CB
+            CB,
+            MB
         ]);
 
         res.json({

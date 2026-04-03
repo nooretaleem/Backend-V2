@@ -496,9 +496,9 @@ exports.submitDailyEntry = async (req, res) => {
 
       await connection.execute(
         `INSERT INTO mobile_oil_cash_sales
-          (daily_entry_id, liters_sold, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, cd, md, CB, MB, Active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
-        [dailyEntryId, litersSold, ratePerLiter, totalAmount, containerType, containerLiters, noOfContainers, cb, mb]
+          (daily_entry_id, pump_id, liters_sold, rate_per_liter, total_amount, container_type, container_liters, no_of_containers, cd, md, CB, MB, Active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, 1)`,
+        [dailyEntryId, pumpId, litersSold, ratePerLiter, totalAmount, containerType, containerLiters, noOfContainers, cb, mb]
       );
 
       // Also record in mobile_oil_purchase for stock tracking

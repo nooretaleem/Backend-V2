@@ -52,6 +52,88 @@ async function resolveVehicleTable() {
     return resolvedVehicleTable;
 }
 
+async function ensureRecoverySchema(run) {
+    const safeAlter = async (sql) => {
+        try {
+            await run(sql);
+        } catch (err) {
+            if (err.code !== 'ER_DUP_FIELDNAME' && err.code !== 'ER_DUP_KEYNAME') {
+                throw err;
+            }
+        }
+    };
+
+    // customer_ledger must store recovery metadata
+    await safeAlter(`ALTER TABLE customer_ledger ADD COLUMN received_in VARCHAR(100) NULL`);
+    await safeAlter(`ALTER TABLE customer_ledger ADD COLUMN purpose VARCHAR(500) NULL`);
+
+    // cash-in-hand ledger table for station recoveries
+    await run(
+        `CREATE TABLE IF NOT EXISTS station_cash_in_hand (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            customer_id INT NOT NULL,
+            ref_type VARCHAR(50) NULL,
+            received_in VARCHAR(100) NULL,
+            purpose VARCHAR(500) NULL,
+            debit DECIMAL(12,2) DEFAULT 0,
+            credit DECIMAL(12,2) DEFAULT 0,
+            balance DECIMAL(12,2) DEFAULT 0,
+            entry_date DATE NULL,
+            CB VARCHAR(50) NULL,
+            MB VARCHAR(50) NULL,
+            CD DATETIME NULL,
+            MD DATETIME NULL,
+            active TINYINT(4) DEFAULT 1,
+            INDEX idx_scih_customer (customer_id),
+            INDEX idx_scih_entry_date (entry_date)
+        )`
+    );
+
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN ref_type VARCHAR(50) NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN received_in VARCHAR(100) NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN purpose VARCHAR(500) NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN entry_date DATE NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN active TINYINT(4) DEFAULT 1`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN CB VARCHAR(50) NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN MB VARCHAR(50) NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN CD DATETIME NULL`);
+    await safeAlter(`ALTER TABLE station_cash_in_hand ADD COLUMN MD DATETIME NULL`);
+
+    // recovery master table
+    await run(
+        `CREATE TABLE IF NOT EXISTS fuel_station_customer_recoveries (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            customer_id INT NOT NULL,
+            station_id INT(11) NULL,
+            transactionID INT(20) NULL,
+            fuel_type VARCHAR(20) NULL,
+            recovery_date DATE NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            payment_mode VARCHAR(100) NULL,
+            reference VARCHAR(100) NULL,
+            CB VARCHAR(50) NULL,
+            MB VARCHAR(50) NULL,
+            CD DATETIME NULL,
+            MD DATETIME NULL,
+            Active TINYINT(4) DEFAULT 1,
+            INDEX idx_fscr_customer (customer_id),
+            INDEX idx_fscr_station (station_id),
+            INDEX idx_fscr_date (recovery_date)
+        )`
+    );
+
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN station_id INT(11) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN transactionID INT(20) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN fuel_type VARCHAR(20) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN payment_mode VARCHAR(100) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN reference VARCHAR(100) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN CB VARCHAR(50) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN MB VARCHAR(50) NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN CD DATETIME NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN MD DATETIME NULL`);
+    await safeAlter(`ALTER TABLE fuel_station_customer_recoveries ADD COLUMN Active TINYINT(4) DEFAULT 1`);
+}
+
 // Get total fuel sold and max allowed credit quantity for a station/fuel type/date (for Add Credit Sale form)
 exports.getCreditSaleLimit = async (req, res) => {
     try {
@@ -355,8 +437,10 @@ exports.addCustomerRecovery = async (req, res) => {
         }
         const amt = Math.abs(parseFloat(amount));
         const CB = req.body.CB || 'System';
-        const isCash = (received_in || '').toLowerCase() === 'cash_in_hand';
-        const isBank = (received_in || '').toLowerCase() === 'bank_account';
+        const receivedInNorm = (received_in || '').toLowerCase();
+        const isCash = receivedInNorm === 'cash_in_hand';
+        const isBank = receivedInNorm === 'bank_account';
+        const paymentMode = isCash ? 'Cash' : isBank ? 'Bank' : (received_in || null);
 
         if (isCash && !station_id) {
             return res.status(400).json({ message: 'Station ID is required when receiving in Cash in Hand' });
@@ -365,8 +449,12 @@ exports.addCustomerRecovery = async (req, res) => {
             return res.status(400).json({ message: 'Account is required when receiving in Bank Account' });
         }
 
-        if (useTransaction) await connection.beginTransaction();
         const run = connection ? connection.execute.bind(connection) : db.execute.bind(db);
+
+        // Auto-heal schema before inserts to avoid production failures.
+        await ensureRecoverySchema(run);
+
+        if (useTransaction) await connection.beginTransaction();
 
         // 1) Customer ledger
         const [lastLedger] = await run(
@@ -394,9 +482,9 @@ exports.addCustomerRecovery = async (req, res) => {
             const prevCashBalance = lastCash.length > 0 ? parseFloat(lastCash[0].balance) || 0 : 0;
             const newCashBalance = prevCashBalance + amt;
             await run(
-                `INSERT INTO station_cash_in_hand (customer_id, debit, credit, balance, purpose, entry_date, CB, CD, MD, MB, active)
-                 VALUES (?, 0, ?, ?, ?, ?, ?, NOW(), NOW(), ?, 1)`,
-                [customer_id, amt, newCashBalance, purposeText, recDate, CB, CB]
+                `INSERT INTO station_cash_in_hand (customer_id, ref_type, received_in, debit, credit, balance, purpose, entry_date, CB, CD, MD, MB, active)
+                 VALUES (?, 'RECOVERY', ?, 0, ?, ?, ?, ?, ?, NOW(), NOW(), ?, 1)`,
+                [customer_id, received_in || null, amt, newCashBalance, purposeText, recDate, CB, CB]
             );
             // 3a) transactions (audit; AccountID may be NULL for station cash)
             const [txResult] = await run(
@@ -427,7 +515,7 @@ exports.addCustomerRecovery = async (req, res) => {
         await run(
             `INSERT INTO fuel_station_customer_recoveries (customer_id, station_id, transactionID, recovery_date, amount, payment_mode, reference, CB, MB, CD, MD, Active)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 1)`,
-            [customer_id, station_id || null, transactionId, recDate, amt, received_in || null, purposeText || null, CB, CB]
+            [customer_id, station_id || null, transactionId, recDate, amt, paymentMode, purposeText || null, CB, CB]
         );
 
         // 5) FIFO Payment Allocation: Apply recovery amount to oldest credit sales
