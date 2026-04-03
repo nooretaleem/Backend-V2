@@ -68,6 +68,7 @@ exports.addFuelStationCustomerVehicle = async (req, res) => {
             return res.status(400).json({ message: 'Vehicle number is required' });
         }
         const CB = req.body.CB || 'System';
+        const MB = req.body.MB || CB;
         if (!CB) {
             return res.status(400).json({ message: 'CB (Created By - username) is required' });
         }
@@ -81,9 +82,9 @@ exports.addFuelStationCustomerVehicle = async (req, res) => {
         }
 
         const [result] = await db.execute(
-            `INSERT INTO ${table} (customer_id, vehicle_number, Active, CB, CD, MD)
-             VALUES (?, ?, 1, ?, NOW(), NOW())`,
-            [customer_id, vehicle_number.trim(), CB]
+            `INSERT INTO ${table} (customer_id, vehicle_number, Active, CB, MB, CD, MD)
+             VALUES (?, ?, 1, ?, ?, NOW(), NOW())`,
+            [customer_id, vehicle_number.trim(), CB, MB]
         );
         res.json({ message: 'Vehicle added successfully', vehicle_id: result.insertId });
     } catch (err) {
