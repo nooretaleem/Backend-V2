@@ -478,7 +478,6 @@ exports.submitDailyEntry = async (req, res) => {
     const mobileOilRows = Array.isArray(body.mobile_oil_cash_sales)
       ? body.mobile_oil_cash_sales
       : (body.mobile_oil_cash_sales ? [body.mobile_oil_cash_sales] : []);
-
     for (const mobileOil of mobileOilRows) {
       const litersSold = Number(mobileOil?.liters_sold ?? 0) || 0;
       const ratePerLiter = Number(mobileOil?.rate_per_liter ?? body.rates?.mobileOil ?? 0) || 0;
@@ -688,15 +687,18 @@ exports.submitDailyEntry = async (req, res) => {
     if (cashOutflowOwner > 0 || (ownerWithdrawal.personName && ownerWithdrawal.personName.trim())) {
       const ownerPersonTypeRaw = String(ownerWithdrawal.personType || '').trim();
       const hasDealerId = ownerWithdrawal.dealerId != null && ownerWithdrawal.dealerId !== '';
+      const hasCreditCustomerId = ownerWithdrawal.creditCustomerId != null && ownerWithdrawal.creditCustomerId !== '';
       const ownerPersonTypeKey = (ownerPersonTypeRaw || (hasDealerId ? 'dealer' : 'owner')).toLowerCase();
       console.log('hasDealerID= ' + hasDealerId + ' ownerPersonTypeRaw= ' + ownerPersonTypeRaw + ' ownerPersonTypeKey= ' + ownerPersonTypeKey);
       const ownerPersonType = ownerPersonTypeKey === 'dealer'
         ? 'Dealer'
         : ownerPersonTypeKey === 'manager'
           ? 'Manager'
-          : ownerPersonTypeKey === 'other'
-            ? 'Other'
-            : 'Owner';
+          : ownerPersonTypeKey === 'credit customer'
+            ? 'Credit Customer'
+            : ownerPersonTypeKey === 'other'
+              ? 'Other'
+              : 'Owner';
       const ownerWithdrawalPersonName = (ownerWithdrawal.personName || '').trim();
 
       const [ownerOutflowResult] = await connection.execute(
@@ -808,6 +810,48 @@ exports.submitDailyEntry = async (req, res) => {
             await connection.execute(
               `UPDATE depo SET Balance = ?, MD = NOW() WHERE id = ?`,
               [updatedDepoBalance, dealerId]
+            );
+          }
+        }
+      }
+
+      // For Credit Customer withdrawal, add amount to customer_ledger as debit (cash on credit).
+      if (cashOutflowOwner > 0 && ownerPersonType.toLowerCase() === 'credit customer') {
+        const creditCustomerId = hasCreditCustomerId ? Number(ownerWithdrawal.creditCustomerId) : null;
+
+        if (creditCustomerId && Number.isFinite(creditCustomerId)) {
+          const [lastLedgerRows] = await connection.execute(
+            `SELECT balance
+             FROM customer_ledger
+             WHERE customer_id = ? AND Active = 1
+             ORDER BY id DESC
+             LIMIT 1`,
+            [creditCustomerId]
+          );
+
+          const previousBalance = lastLedgerRows.length > 0
+            ? Number(lastLedgerRows[0].balance || 0)
+            : 0;
+          const nextBalance = previousBalance + cashOutflowOwner;
+
+          try {
+            await connection.execute(
+              `INSERT INTO customer_ledger
+                 (customer_id, ref_type, debit, credit, balance, purpose, CB, CD, MD, Active)
+               VALUES (?, 'cash_on_credit', ?, 0, ?, 'cash on credit', ?, NOW(), NOW(), 1)`,
+              [creditCustomerId, cashOutflowOwner, nextBalance, cb]
+            );
+          } catch (ledgerInsertErr) {
+            if (ledgerInsertErr.code !== 'ER_BAD_FIELD_ERROR') {
+              throw ledgerInsertErr;
+            }
+
+            // Backward compatibility for environments where customer_ledger.purpose does not exist.
+            await connection.execute(
+              `INSERT INTO customer_ledger
+                 (customer_id, ref_type, debit, credit, balance, CB, CD, MD, Active)
+               VALUES (?, 'cash_on_credit', ?, 0, ?, ?, NOW(), NOW(), 1)`,
+              [creditCustomerId, cashOutflowOwner, nextBalance, cb]
             );
           }
         }

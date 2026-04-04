@@ -367,10 +367,10 @@ exports.addCustomerCreditSale = async (req, res) => {
 
         // 3) Insert customer_ledger (debit)
         const ledgerInsert = `
-            INSERT INTO customer_ledger (customer_id, ref_type, ref_id, debit, credit, balance, CB, CD, MD, Active)
-            VALUES (?, 'credit_sale', ?, ?, 0, ?, ?, NOW(), NOW(), 1)
+            INSERT INTO customer_ledger (customer_id, ref_type, debit, credit, balance, CB, CD, MD, Active)
+            VALUES (?, 'credit_sale', ?, 0, ?, ?, NOW(), NOW(), 1)
         `;
-        await run(ledgerInsert, [customer_id, creditSaleId, amt, newBalance, CB]);
+        await run(ledgerInsert, [customer_id, amt, newBalance, CB]);
 
         // 4) Update daily_sales_summary: add to credit_sale, subtract from cash_sale for this date/station/fuel
         const summaryId = summaryRows[0].id;

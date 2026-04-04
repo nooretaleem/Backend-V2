@@ -318,49 +318,130 @@ exports.getPumpDashboardData = async (req, res) => {
                 [pumpId, dateFrom, dateTo]
             ),
 
-            // Outstanding dues - optimized query
+            // Outstanding dues total: credit sales + ledger debit - recoveries(ledger credit)
             db.execute(
-                `SELECT COALESCE(SUM(cs.remaining_amount), 0) as total 
-                FROM credit_sales cs
-                INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id
-                WHERE dse.pump_id = ? AND cs.payment_status != 'paid' AND cs.Active = 1 AND dse.Active = 1 AND cs.remaining_amount > 0`,
-                [pumpId]
+                `SELECT COALESCE(SUM(customer_due), 0) AS total
+                                 FROM (
+                                     SELECT
+                                         base.customer_id,
+                                         GREATEST(
+                                             COALESCE(cs.credit_sales_total, 0) + COALESCE(cl.debit_total, 0) - COALESCE(cl.credit_total, 0),
+                                             0
+                                         ) AS customer_due
+                                     FROM (
+                                         SELECT DISTINCT cs.fuel_station_customer_id AS customer_id
+                                         FROM credit_sales cs
+                                         INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
+                                         WHERE dse.pump_id = ? AND cs.Active = 1
+                                     ) base
+                                     LEFT JOIN (
+                                         SELECT
+                                             cs.fuel_station_customer_id AS customer_id,
+                                             COALESCE(SUM(cs.total_amount), 0) AS credit_sales_total
+                                         FROM credit_sales cs
+                                         INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
+                                         WHERE dse.pump_id = ? AND cs.Active = 1
+                                         GROUP BY cs.fuel_station_customer_id
+                                     ) cs ON base.customer_id = cs.customer_id
+                                     LEFT JOIN (
+                                         SELECT
+                                             customer_id,
+                                             COALESCE(SUM(debit), 0) AS debit_total,
+                                             COALESCE(SUM(credit), 0) AS credit_total
+                                         FROM customer_ledger
+                                         WHERE Active = 1
+                                         GROUP BY customer_id
+                                     ) cl ON base.customer_id = cl.customer_id
+                                 ) dues`,
+                [pumpId, pumpId]
             ),
             // Outstanding dues count (customers pending)
             db.execute(
-                `SELECT COUNT(DISTINCT cs.fuel_station_customer_id) as cnt FROM credit_sales cs
-                INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id
-                WHERE dse.pump_id = ? AND cs.payment_status != 'paid' AND cs.Active = 1 AND dse.Active = 1 AND cs.remaining_amount > 0`,
-                [pumpId]
+                `SELECT COUNT(*) AS cnt
+                                 FROM (
+                                     SELECT
+                                         base.customer_id,
+                                         GREATEST(
+                                             COALESCE(cs.credit_sales_total, 0) + COALESCE(cl.debit_total, 0) - COALESCE(cl.credit_total, 0),
+                                             0
+                                         ) AS customer_due
+                                     FROM (
+                                         SELECT DISTINCT cs.fuel_station_customer_id AS customer_id
+                                         FROM credit_sales cs
+                                         INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
+                                         WHERE dse.pump_id = ? AND cs.Active = 1
+                                     ) base
+                                     LEFT JOIN (
+                                         SELECT
+                                             cs.fuel_station_customer_id AS customer_id,
+                                             COALESCE(SUM(cs.total_amount), 0) AS credit_sales_total
+                                         FROM credit_sales cs
+                                         INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
+                                         WHERE dse.pump_id = ? AND cs.Active = 1
+                                         GROUP BY cs.fuel_station_customer_id
+                                     ) cs ON base.customer_id = cs.customer_id
+                                     LEFT JOIN (
+                                         SELECT
+                                             customer_id,
+                                             COALESCE(SUM(debit), 0) AS debit_total,
+                                             COALESCE(SUM(credit), 0) AS credit_total
+                                         FROM customer_ledger
+                                         WHERE Active = 1
+                                         GROUP BY customer_id
+                                     ) cl ON base.customer_id = cl.customer_id
+                                 ) dues
+                                 WHERE dues.customer_due > 0`,
+                [pumpId, pumpId]
             ),
             // Outstanding dues list (per customer)
             db.execute(
-                `SELECT cs.fuel_station_customer_id as customerId,
-                 COALESCE(MAX(fsc.customer_name), CONCAT('Customer #', COALESCE(cs.fuel_station_customer_id, 0))) as customer_name,
-                 SUM(cs.remaining_amount) as remaining_amount,
-                 MIN(DATE(cs.cd)) as due_since,
-                 MAX(cs.paid_amount) as last_payment,
-                 COALESCE(cl.last_credit, 0) as recovery_last_amount,
-                 cl.last_credit_date as recovery_date
-                FROM credit_sales cs
-                LEFT JOIN fuel_station_customer fsc ON cs.fuel_station_customer_id = fsc.customer_id AND fsc.Active = 1
-                INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
-                LEFT JOIN (
-                  SELECT cl1.customer_id, cl1.credit as last_credit, DATE(cl1.CD) as last_credit_date
-                  FROM customer_ledger cl1
-                  INNER JOIN (
-                    SELECT customer_id, MAX(id) as max_id
-                    FROM customer_ledger
-                    WHERE Active = 1 AND credit > 0
-                    GROUP BY customer_id
-                  ) cl2 ON cl1.customer_id = cl2.customer_id AND cl1.id = cl2.max_id
-                  WHERE cl1.Active = 1
-                ) cl ON cs.fuel_station_customer_id = cl.customer_id
-                WHERE dse.pump_id = ? AND cs.payment_status != 'paid' AND cs.Active = 1 AND cs.remaining_amount > 0
-                GROUP BY cs.fuel_station_customer_id
-                ORDER BY remaining_amount DESC
-                LIMIT 15`,
-                [pumpId]
+                `SELECT
+                                     base.customer_id AS customerId,
+                                     COALESCE(fsc.customer_name, CONCAT('Customer #', base.customer_id)) AS customer_name,
+                                     GREATEST(
+                                         COALESCE(cs.credit_sales_total, 0) + COALESCE(cl.debit_total, 0) - COALESCE(cl.credit_total, 0),
+                                         0
+                                     ) AS remaining_amount,
+                                     cs.due_since,
+                                     COALESCE(cs.last_payment, 0) AS last_payment,
+                                     COALESCE(cl.last_credit, 0) AS recovery_last_amount,
+                                     cl.last_credit_date AS recovery_date
+                                 FROM (
+                                     SELECT DISTINCT cs.fuel_station_customer_id AS customer_id
+                                     FROM credit_sales cs
+                                     INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
+                                     WHERE dse.pump_id = ? AND cs.Active = 1
+                                 ) base
+                                 LEFT JOIN fuel_station_customer fsc ON base.customer_id = fsc.customer_id AND fsc.Active = 1
+                                 LEFT JOIN (
+                                     SELECT
+                                         cs.fuel_station_customer_id AS customer_id,
+                                         COALESCE(SUM(cs.total_amount), 0) AS credit_sales_total,
+                                         MIN(DATE(cs.cd)) AS due_since,
+                                         MAX(cs.paid_amount) AS last_payment
+                                     FROM credit_sales cs
+                                     INNER JOIN daily_sales_entries dse ON cs.daily_entry_id = dse.id AND dse.Active = 1
+                                     WHERE dse.pump_id = ? AND cs.Active = 1
+                                     GROUP BY cs.fuel_station_customer_id
+                                 ) cs ON base.customer_id = cs.customer_id
+                                 LEFT JOIN (
+                                     SELECT
+                                         cl.customer_id,
+                                         COALESCE(SUM(cl.debit), 0) AS debit_total,
+                                         COALESCE(SUM(cl.credit), 0) AS credit_total,
+                                         MAX(CASE WHEN cl.credit > 0 THEN cl.credit ELSE 0 END) AS last_credit,
+                                         MAX(CASE WHEN cl.credit > 0 THEN DATE(cl.CD) ELSE NULL END) AS last_credit_date
+                                     FROM customer_ledger cl
+                                     WHERE cl.Active = 1
+                                     GROUP BY cl.customer_id
+                                 ) cl ON base.customer_id = cl.customer_id
+                                 WHERE GREATEST(
+                                     COALESCE(cs.credit_sales_total, 0) + COALESCE(cl.debit_total, 0) - COALESCE(cl.credit_total, 0),
+                                     0
+                                 ) > 0
+                                 ORDER BY remaining_amount DESC
+                                 LIMIT 15`,
+                [pumpId, pumpId]
             ),
             // Daily expenses breakdown by category (with category name from expense_categories)
             db.execute(
