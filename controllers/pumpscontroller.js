@@ -347,15 +347,30 @@ exports.getPumpDetails = async (req, res) => {
         [id]
       ),
       db.execute(
-        `SELECT nz.* 
+        `SELECT nz.*,
+                nr_latest.closing_digital_reading AS latest_closing_digital_reading,
+                nr_latest.closing_mechanical_reading AS latest_closing_mechanical_reading
          FROM nozzles nz
          JOIN machines mc ON nz.machine_id = mc.id
+         LEFT JOIN (
+           SELECT nr1.nozzle_id,
+                  nr1.closing_digital_reading,
+                  nr1.closing_mechanical_reading
+           FROM nozzle_readings nr1
+           INNER JOIN (
+             SELECT nozzle_id, MAX(id) AS max_id
+             FROM nozzle_readings
+             WHERE Active = 1
+             GROUP BY nozzle_id
+           ) latest ON latest.nozzle_id = nr1.nozzle_id AND latest.max_id = nr1.id
+           WHERE nr1.Active = 1
+         ) nr_latest ON nr_latest.nozzle_id = nz.id
          WHERE mc.pump_id = ?
          ORDER BY mc.machine_number, nz.nozzle_number`,
         [id]
       ),
       db.execute(
-        `SELECT ps.staffid, s.name, s.phone, s.designation
+        `SELECT ps.staffid, s.name, s.phone, s.designation, s.role
          FROM pump_staff ps
          JOIN staff s ON s.id = ps.staffid
          WHERE ps.pumpid = ? AND ps.Active = 1`,
@@ -680,7 +695,7 @@ exports.updatePump = async (req, res) => {
 
           // Insert new tank
           try {
-            await conn.execute(
+            const [insertResult] = await conn.execute(
               `INSERT INTO fuel_tanks (
                  pump_id, tank_type_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
                  Active, CB, CD, MB, MD
@@ -697,6 +712,9 @@ exports.updatePump = async (req, res) => {
                 MB
               ]
             );
+            if (insertResult && insertResult.insertId) {
+              processedTankIds.add(Number(insertResult.insertId));
+            }
           } catch (insertErr) {
             // If insert fails due to duplicate, delete conflicting tank and retry
             if (insertErr.code === 'ER_DUP_ENTRY') {
@@ -709,7 +727,7 @@ exports.updatePump = async (req, res) => {
               if (conflictingTanks && conflictingTanks.length > 0) {
                 await conn.execute(`DELETE FROM fuel_tanks WHERE id = ?`, [conflictingTanks[0].id]);
                 // Retry insert
-                await conn.execute(
+                const [retryInsertResult] = await conn.execute(
                   `INSERT INTO fuel_tanks (
                      pump_id, tank_type_id, fuel_type, capacity, current_level, low_alert_level, tank_number,
                      Active, CB, CD, MB, MD
@@ -726,6 +744,9 @@ exports.updatePump = async (req, res) => {
                     MB
                   ]
                 );
+                if (retryInsertResult && retryInsertResult.insertId) {
+                  processedTankIds.add(Number(retryInsertResult.insertId));
+                }
               } else {
                 throw insertErr;
               }

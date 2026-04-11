@@ -5,7 +5,7 @@ const bcrypt = require('bcrypt');
 exports.getStaff = async (req, res) => {
     try {
         const query = `
-            SELECT s.id, s.staffCode, s.name, s.phone, s.designation, s.employmentType,
+                 SELECT s.id, s.staffCode, s.name, s.phone, s.designation, s.role, s.employmentType,
                    s.joiningDate, s.user_id,
                    COALESCE(ps.pumpid, s.pump_id) AS pump_id,
                    s.cnic, s.salary,
@@ -41,7 +41,7 @@ exports.getStaffById = async (req, res) => {
         }
 
         const query = `
-            SELECT s.id, s.staffCode, s.name, s.phone, s.designation, s.employmentType,
+                 SELECT s.id, s.staffCode, s.name, s.phone, s.designation, s.role, s.employmentType,
                    s.joiningDate, s.user_id, s.pump_id, s.cnic, s.salary,
                    s.cd, s.md, s.CB, s.MB, s.Active, u.email, u.roleid
             FROM staff s
@@ -70,6 +70,7 @@ exports.addStaff = async (req, res) => {
             phone,
             designation,
             employmentType,
+            role,
             joiningDate,
             email,
             password,
@@ -111,6 +112,14 @@ exports.addStaff = async (req, res) => {
         if (!employmentType || !employmentType.trim()) {
             return res.status(400).json({ message: 'Employment type is required' });
         }
+        const normalizedRole = String(role || '').trim();
+        if (!normalizedRole) {
+            return res.status(400).json({ message: 'Role is required' });
+        }
+        const allowedRoles = ['cashier', 'staff', 'filler', 'supervisor', 'accountant', 'security guard', 'cleaner'];
+        if (!allowedRoles.includes(normalizedRole.toLowerCase())) {
+            return res.status(400).json({ message: 'Role must be one of: Cashier, Staff, Filler, Supervisor, Accountant, Security Guard, Cleaner' });
+        }
         if (!joiningDate || !joiningDate.trim()) {
             return res.status(400).json({ message: 'Joining date is required' });
         }
@@ -143,9 +152,9 @@ exports.addStaff = async (req, res) => {
         const query = `
             INSERT INTO staff (
                 staffCode, name, phone, designation, employmentType,
-                joiningDate, user_id, pump_id, cnic, salary,
+                joiningDate, role, user_id, pump_id, cnic, salary,
                 Active, CB, CD, MB, MD
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, NOW())
         `;
 
         const [result] = await db.execute(query, [
@@ -155,6 +164,7 @@ exports.addStaff = async (req, res) => {
             designation.trim(),
             employmentType.trim(),
             joiningDate,
+            normalizedRole.charAt(0).toUpperCase() + normalizedRole.slice(1).toLowerCase(),
             userId,
             pumpId,
             cnic ? cnic.trim() : null,
@@ -189,6 +199,7 @@ exports.updateStaff = async (req, res) => {
             phone,
             designation,
             employmentType,
+            role,
             joiningDate,
             user_id,
             email,
@@ -222,6 +233,14 @@ exports.updateStaff = async (req, res) => {
         }
         if (!employmentType || !employmentType.trim()) {
             return res.status(400).json({ message: 'Employment type is required' });
+        }
+        const normalizedRole = String(role || '').trim();
+        if (!normalizedRole) {
+            return res.status(400).json({ message: 'Role is required' });
+        }
+        const allowedRoles = ['cashier', 'staff', 'filler', 'supervisor', 'accountant', 'security guard', 'cleaner'];
+        if (!allowedRoles.includes(normalizedRole.toLowerCase())) {
+            return res.status(400).json({ message: 'Role must be one of: Cashier, Staff, Filler, Supervisor, Accountant, Security Guard, Cleaner' });
         }
         if (!joiningDate || !joiningDate.trim()) {
             return res.status(400).json({ message: 'Joining date is required' });
@@ -258,7 +277,7 @@ exports.updateStaff = async (req, res) => {
         const query = `
             UPDATE staff SET
                 staffCode = ?, name = ?, phone = ?, designation = ?,
-                employmentType = ?, joiningDate = ?, user_id = ?,
+                employmentType = ?, joiningDate = ?, role = ?, user_id = ?,
                 pump_id = ?, cnic = ?, salary = ?, Active = ?,
                 MB = ?, MD = NOW()
             WHERE id = ?
@@ -271,6 +290,7 @@ exports.updateStaff = async (req, res) => {
             designation.trim(),
             employmentType.trim(),
             joiningDate,
+            normalizedRole.charAt(0).toUpperCase() + normalizedRole.slice(1).toLowerCase(),
             userId,
             pumpId,
             cnic ? cnic.trim() : null,

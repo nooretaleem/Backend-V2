@@ -367,53 +367,31 @@ exports.submitDailyEntry = async (req, res) => {
 
     await connection.beginTransaction();
 
-    const [[existingEntryRow]] = await connection.execute(
-      `SELECT id FROM daily_sales_entries WHERE pump_id = ? AND entry_date = ? LIMIT 1`,
-      [pumpId, entryDate]
-    );
-    const existingDailyEntryId = existingEntryRow?.id ? Number(existingEntryRow.id) : null;
-
-    // 1. Insert or update daily_sales_entries (one per pump per date; duplicate = update so no error)
+    // 1. Always insert a NEW daily_sales_entries row.
+    // This enables multiple daily fuel sales entries for the same pump/date.
     const [entryResult] = await connection.execute(
       `INSERT INTO daily_sales_entries (pump_id, entry_date, status, submitted_at, CB, MB, cd, md, Active)
-       VALUES (?, ?, 'submitted', NOW(), ?, ?, NOW(), NOW(), 1)
-       ON DUPLICATE KEY UPDATE status = 'submitted', submitted_at = NOW(), CB = VALUES(CB), MB = VALUES(MB), md = NOW()`,
+       VALUES (?, ?, 'submitted', NOW(), ?, ?, NOW(), NOW(), 1)`,
       [pumpId, entryDate, cb, mb]
     );
-    let dailyEntryId = entryResult.insertId || existingDailyEntryId;
+
+    const dailyEntryId = entryResult.insertId ? Number(entryResult.insertId) : null;
     if (!dailyEntryId) {
-      const [[row]] = await connection.execute(
-        `SELECT id FROM daily_sales_entries WHERE pump_id = ? AND entry_date = ? LIMIT 1`,
-        [pumpId, entryDate]
-      );
-      if (!row || !row.id) throw new Error('Failed to create or find daily_sales_entries record');
-      dailyEntryId = row.id;
+      throw new Error('Failed to create daily_sales_entries record');
     }
 
-    if (existingDailyEntryId) {
-      // Re-submit: remove existing child rows so we can insert fresh data
-      await connection.execute('DELETE FROM nozzle_readings WHERE daily_entry_id = ?', [dailyEntryId]);
-      await connection.execute('DELETE FROM machine_readings WHERE daily_entry_id = ?', [dailyEntryId]);
-      await connection.execute('DELETE FROM mobile_oil_cash_sales WHERE daily_entry_id = ?', [dailyEntryId]);
-      await connection.execute('DELETE FROM daily_expenses WHERE daily_entry_id = ?', [dailyEntryId]);
-      // Delete cash outflow child rows first (JOIN to avoid subquery in DELETE)
-      await connection.execute(
-        'DELETE co FROM cash_outflow_net co INNER JOIN cash_management cm ON co.cash_management_id = cm.id WHERE cm.daily_entry_id = ?',
-        [dailyEntryId]
-      );
-      await connection.execute(
-        'DELETE co FROM cash_outflow_bank co INNER JOIN cash_management cm ON co.cash_management_id = cm.id WHERE cm.daily_entry_id = ?',
-        [dailyEntryId]
-      );
-      await connection.execute(
-        'DELETE co FROM cash_outflow_owner co INNER JOIN cash_management cm ON co.cash_management_id = cm.id WHERE cm.daily_entry_id = ?',
-        [dailyEntryId]
-      );
-      await connection.execute('DELETE FROM cash_management WHERE daily_entry_id = ?', [dailyEntryId]);
-      await connection.execute('DELETE FROM credit_sales WHERE daily_entry_id = ?', [dailyEntryId]);
+    // 1b. Save selected daily entry staff linked from Step 1.
+    const dailyEntryStaff = Array.isArray(body.daily_entry_staff) ? body.daily_entry_staff : [];
+    for (const staffItem of dailyEntryStaff) {
+      const staffId = Number(staffItem?.staffid || 0);
+      const staffPumpId = Number(staffItem?.pumpid || pumpId || 0);
+      if (!staffId || !staffPumpId) continue;
 
-      // Preserve daily_tank_inventory rows from dip readings / receipts.
-      // We update sold_quantity later from nozzle sales instead of deleting these rows.
+      await connection.execute(
+        `INSERT INTO daily_sales_entry_staff (daily_entry_id, pumpid, staffid, CB, MB, CD, MD, Active)
+         VALUES (?, ?, ?, ?, ?, NOW(), NOW(), 1)`,
+        [dailyEntryId, staffPumpId, staffId, cb, mb]
+      );
     }
 
     // 2. Nozzle readings (one row per nozzle: use max of digital/mechanical sold)
@@ -861,7 +839,8 @@ exports.submitDailyEntry = async (req, res) => {
     // 9. Credit sales
     const creditSales = body.credit_sales || [];
     for (const cs of creditSales) {
-      const customerId = cs.customer_id;
+      const customerId = cs.customer_id || null;
+      const wsCustomerId = cs.ws_customer_id || null;
       const fuelType = cs.fuelType || 'Petrol';
       const quantityLiters = cs.quantity || 0;
       const ratePerLiter = cs.priceType === 'Regular'
@@ -871,12 +850,12 @@ exports.submitDailyEntry = async (req, res) => {
       const priceType = cs.priceType || 'Regular';
       const specificPrice = cs.priceType === 'Specific' ? (cs.price || 0) : null;
       const notes = cs.notes || null;
-      const customerVehicleId = cs.customer_vehicle_id || null;
+      const customerVehicleId = customerId ? (cs.customer_vehicle_id || null) : null;
 
       await connection.execute(
-        `INSERT INTO credit_sales (daily_entry_id, fuel_station_customer_id, customer_vehicle_id, fuel_type, quantity_liters, rate_per_liter, total_amount, price_type, specific_price, notes, payment_status, paid_amount, remaining_amount, cd, md, CB, MB, Active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, NOW(), NOW(), ?, ?, 1)`,
-        [dailyEntryId, customerId, customerVehicleId, fuelType, quantityLiters, ratePerLiter || 0, totalAmount, priceType, specificPrice, notes, totalAmount, cb, mb]
+        `INSERT INTO credit_sales (daily_entry_id, fuel_station_customer_id, ws_customer_id, customer_vehicle_id, fuel_type, quantity_liters, rate_per_liter, total_amount, price_type, specific_price, notes, payment_status, paid_amount, remaining_amount, cd, md, CB, MB, Active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, NOW(), NOW(), ?, ?, 1)`,
+        [dailyEntryId, customerId, wsCustomerId, customerVehicleId, fuelType, quantityLiters, ratePerLiter || 0, totalAmount, priceType, specificPrice, notes, totalAmount, cb, mb]
       );
     }
 
@@ -963,24 +942,30 @@ exports.getNozzleReadingsByDate = async (req, res) => {
 
     const connection = await db.getConnection();
 
-    // First, check if there's a daily entry for the specified date
-    const [dailyEntries] = await connection.execute(
-      `SELECT dse.id, dse.cd
-       FROM daily_sales_entries dse
-       WHERE dse.pump_id = ? AND CAST(dse.entry_date AS DATE) = CAST(? AS DATE) AND dse.Active = 1
-       LIMIT 1`,
-      [pumpId, entryDate]
-    );
-    //console.log('getNozzleReadingsByDate dailyEntries:', dailyEntries);
+    // In includeNoEntry mode (Daily Entry Step 2), always treat as NEW entry.
+    // This allows multiple entries for the same date and ensures opening values come
+    // from latest closing readings, not from an existing same-date entry's opening values.
+    let dailyEntries = [];
+    if (!includeNoEntry) {
+      const [rows] = await connection.execute(
+        `SELECT dse.id, dse.cd
+         FROM daily_sales_entries dse
+         WHERE dse.pump_id = ? AND CAST(dse.entry_date AS DATE) = CAST(? AS DATE) AND dse.Active = 1
+         ORDER BY dse.id DESC
+         LIMIT 1`,
+        [pumpId, entryDate]
+      );
+      dailyEntries = rows || [];
+    }
 
     if ((!dailyEntries || dailyEntries.length === 0) && !includeNoEntry) {
       connection.release();
       return res.status(200).json({ machines: [], dailyEntryId: null, cdDateTime: null });
     }
 
-    // Get the daily entry ID and CD datetime if exists; keep null for new entry flow
-    const dailyEntryId = (dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].id : null;
-    const cdDateTime = (dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].cd : null;
+    // Existing-entry mode: set dailyEntryId. New-entry mode: keep null.
+    const dailyEntryId = (!includeNoEntry && dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].id : null;
+    const cdDateTime = (!includeNoEntry && dailyEntries && dailyEntries.length > 0) ? dailyEntries[0].cd : null;
 
     // Get all machines and their nozzles for this pump
     const [pumpsData] = await connection.execute(
@@ -1019,7 +1004,34 @@ exports.getNozzleReadingsByDate = async (req, res) => {
       );
       readings = readingsData;
     }
-    //console.log('getNozzleReadingsByDate readings:', readings);
+
+    // For a new entry (no daily_sales_entries row for the selected date), load the most recent
+    // previous entry's closing readings so they appear as the opening values in Step 2.
+    let previousReadings = [];
+    if (!dailyEntryId) {
+      const [prevEntry] = await connection.execute(
+        `SELECT dse.id
+         FROM daily_sales_entries dse
+         WHERE dse.pump_id = ? AND CAST(dse.entry_date AS DATE) <= CAST(? AS DATE) AND dse.Active = 1
+         ORDER BY dse.entry_date DESC, dse.id DESC
+         LIMIT 1`,
+        [pumpId, entryDate]
+      );
+      if (prevEntry && prevEntry.length > 0) {
+        const prevEntryId = prevEntry[0].id;
+        const [prevRows] = await connection.execute(
+          `SELECT nozzle_id, closing_digital_reading, closing_mechanical_reading
+           FROM nozzle_readings
+           WHERE daily_entry_id = ? AND Active = 1`,
+          [prevEntryId]
+        );
+        previousReadings = prevRows || [];
+        console.log('getNozzleReadingsByDate: No entry found for date', entryDate, 'Loading from previous entry', prevEntryId);
+        console.log('getNozzleReadingsByDate: loaded', previousReadings.length, 'previous readings:', JSON.stringify(previousReadings.slice(0, 3)));
+      } else {
+        console.log('getNozzleReadingsByDate: No previous entry found before', entryDate);
+      }
+    }
     connection.release();
 
     // Build hierarchical data structure
@@ -1035,30 +1047,40 @@ exports.getNozzleReadingsByDate = async (req, res) => {
         };
       }
 
-      // Find reading for this nozzle from nozzle_readings table
+      // Find reading for this nozzle from nozzle_readings table (current day entry)
       const reading = readings.find(r => r.nozzle_id === row.nozzle_id);
+      // Find previous entry's closing reading (used as opening for new entries)
+      const prevReading = previousReadings.find(r => r.nozzle_id === row.nozzle_id);
 
-      // Opening fallback for missing nozzle_readings is nozzles.initial_* as requested.
       machinesMap[row.machine_id].nozzles.push({
         id: row.nozzle_id,
         name: `Nozzle ${row.nozzle_number}`,
+        // Opening: from today's entry if exists, else from previous entry's closing, else from nozzle initial
         oldDigital: reading
           ? (reading.opening_digital_reading != null ? Number(reading.opening_digital_reading) : null)
-          : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : (row.current_reading_digital != null ? Number(row.current_reading_digital) : null)),
+          : prevReading
+            ? (prevReading.closing_digital_reading != null ? Number(prevReading.closing_digital_reading) : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : null))
+            : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : (row.current_reading_digital != null ? Number(row.current_reading_digital) : null)),
         newDigital: reading
           ? (reading.closing_digital_reading != null ? Number(reading.closing_digital_reading) : null)
-          : (row.current_reading_digital != null ? Number(row.current_reading_digital) : (row.initial_reading_digital != null ? Number(row.initial_reading_digital) : null)),
+          : null,
         oldMech: reading
           ? (reading.opening_mechanical_reading != null ? Number(reading.opening_mechanical_reading) : null)
-          : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : (row.current_reading_mechanical != null ? Number(row.current_reading_mechanical) : null)),
+          : prevReading
+            ? (prevReading.closing_mechanical_reading != null ? Number(prevReading.closing_mechanical_reading) : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : null))
+            : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : (row.current_reading_mechanical != null ? Number(row.current_reading_mechanical) : null)),
         newMech: reading
           ? (reading.closing_mechanical_reading != null ? Number(reading.closing_mechanical_reading) : null)
-          : (row.current_reading_mechanical != null ? Number(row.current_reading_mechanical) : (row.initial_reading_mechanical != null ? Number(row.initial_reading_mechanical) : null)),
+          : null,
         isEditing: false
       });
     });
 
     const machines = Object.values(machinesMap);
+    console.log('getNozzleReadingsByDate: returning', machines.length, 'machines for pump', pumpId, 'date', entryDate);
+    machines.forEach((m, i) => {
+      if (i < 2) console.log('  Machine', i, ':', m.name, 'with', m.nozzles.length, 'nozzles, first nozzle oldDigital:', m.nozzles[0]?.oldDigital);
+    });
     return res.status(200).json({
       machines,
       dailyEntryId: dailyEntryId,
@@ -1426,6 +1448,7 @@ exports.getCreditSalesByDate = async (req, res) => {
       `SELECT id, CD as cdDateTime 
        FROM daily_sales_entries 
        WHERE pump_id = ? AND entry_date = ? AND Active = 1 
+       ORDER BY id DESC
        LIMIT 1`,
       [pump_id, formattedDate]
     );
@@ -1449,7 +1472,8 @@ exports.getCreditSalesByDate = async (req, res) => {
       `SELECT 
         cs.id,
         cs.fuel_station_customer_id as customerId,
-        fsc.customer_name as customerName,
+        cs.ws_customer_id as ws_customer_id,
+        COALESCE(fsc.customer_name, wc.name) as customerName,
         cs.customer_vehicle_id as customerVehicleId,
         fscv.vehicle_number as vehicleNumber,
         COALESCE(ft.id, cs.fuel_type) as fuelTypeId,
@@ -1458,9 +1482,11 @@ exports.getCreditSalesByDate = async (req, res) => {
         cs.rate_per_liter as ratePerLiter,
         cs.total_amount as totalAmount,
         cs.notes,
+        CASE WHEN cs.ws_customer_id IS NOT NULL THEN 'Supplier' ELSE 'Local' END as customerType,
         COALESCE(ft.name, cs.fuel_type) as fuelTypeName
        FROM credit_sales cs 
        LEFT JOIN fuel_station_customer fsc ON cs.fuel_station_customer_id = fsc.customer_id
+       LEFT JOIN customers wc ON cs.ws_customer_id = wc.id
        LEFT JOIN fuele_station_customer_vehicles fscv ON cs.customer_vehicle_id = fscv.vehicle_id
        LEFT JOIN fuel_types ft ON CAST(cs.fuel_type AS UNSIGNED) = ft.id OR LOWER(ft.name) = LOWER(cs.fuel_type)
        WHERE cs.daily_entry_id = ? AND cs.Active = 1
@@ -1508,12 +1534,17 @@ exports.saveCreditSales = async (req, res) => {
         for (const sale of existing_sales) {
           if (!sale.id) continue;
 
+          const fuelStationCustomerId = sale.customerId || null;
+          const wsCustomerId = sale.ws_customer_id || null;
+          const customerVehicleId = fuelStationCustomerId ? (sale.customerVehicleId || null) : null;
+
           console.log('saveCreditSales: Updating existing sale ID', sale.id,
-            'with:', { customerId: sale.customerId, vehicleId: sale.customerVehicleId, fuelTypeId: sale.fuelTypeId });
+            'with:', { customerId: fuelStationCustomerId, wsCustomerId, vehicleId: customerVehicleId, fuelTypeId: sale.fuelTypeId });
 
           await connection.execute(
             `UPDATE credit_sales 
              SET fuel_station_customer_id = ?,
+                 ws_customer_id = ?,
                  customer_vehicle_id = ?,
                  fuel_type = ?,
                  quantity_liters = ?, 
@@ -1525,8 +1556,9 @@ exports.saveCreditSales = async (req, res) => {
                  MB = ?
              WHERE id = ? AND daily_entry_id = ? AND Active = 1`,
             [
-              sale.customerId || null,
-              sale.customerVehicleId || null,
+              fuelStationCustomerId,
+              wsCustomerId,
+              customerVehicleId,
               sale.fuelTypeId || null,
               sale.quantity || 0,
               sale.ratePerLiter || 0,
@@ -1544,21 +1576,26 @@ exports.saveCreditSales = async (req, res) => {
       // Create new credit sales
       if (Array.isArray(new_sales) && new_sales.length > 0) {
         for (const sale of new_sales) {
-          if (!sale.customerId || !sale.fuelTypeId || sale.quantity <= 0) continue;
+          const fuelStationCustomerId = sale.customerId || null;
+          const wsCustomerId = sale.ws_customer_id || null;
+          if ((!fuelStationCustomerId && !wsCustomerId) || !sale.fuelTypeId || sale.quantity <= 0) continue;
+
+          const customerVehicleId = fuelStationCustomerId ? (sale.customerVehicleId || null) : null;
 
           console.log('saveCreditSales: Inserting new sale:',
-            { customerId: sale.customerId, vehicleId: sale.customerVehicleId, fuelTypeId: sale.fuelTypeId, qty: sale.quantity });
+            { customerId: fuelStationCustomerId, wsCustomerId, vehicleId: customerVehicleId, fuelTypeId: sale.fuelTypeId, qty: sale.quantity });
 
           await connection.execute(
             `INSERT INTO credit_sales 
-             (daily_entry_id, fuel_station_customer_id, customer_vehicle_id, fuel_type, quantity_liters, rate_per_liter, 
+             (daily_entry_id, fuel_station_customer_id, ws_customer_id, customer_vehicle_id, fuel_type, quantity_liters, rate_per_liter, 
               total_amount, price_type, specific_price, notes, payment_status, paid_amount, 
               remaining_amount, cd, md, CB, MB, Active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, NOW(), NOW(), ?, ?, 1)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, NOW(), NOW(), ?, ?, 1)`,
             [
               daily_entry_id,
-              sale.customerId,
-              sale.customerVehicleId || null,
+              fuelStationCustomerId,
+              wsCustomerId,
+              customerVehicleId,
               sale.fuelTypeId,
               sale.quantity || 0,
               sale.ratePerLiter || 0,

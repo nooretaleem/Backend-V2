@@ -78,23 +78,24 @@ exports.getPetrolPumpDashboard = async (req, res) => {
     }
 };
 
-/** Get date range [dateFrom, dateTo] for period (daily, weekly, monthly, yearly). */
-function getDateRangeForPeriod(period, todayStr = getLocalDateStr()) {
-    const now = new Date();
-    const today = todayStr || getLocalDateStr(now);
+/** Get date range [dateFrom, dateTo] for period (daily, weekly, monthly, yearly), anchored to a selected date. */
+function getDateRangeForPeriod(period, anchorDateStr = getLocalDateStr()) {
+    const anchorDate = new Date(`${anchorDateStr}T00:00:00`);
+    const base = isNaN(anchorDate.getTime()) ? new Date() : anchorDate;
+    const today = getLocalDateStr(base);
     const p = (period || 'daily').toLowerCase();
     if (p === 'daily') return { dateFrom: today, dateTo: today };
     if (p === 'weekly') {
-        const d = new Date(now);
+        const d = new Date(base);
         d.setDate(d.getDate() - 6);
         return { dateFrom: getLocalDateStr(d), dateTo: today };
     }
     if (p === 'monthly') {
-        const y = now.getFullYear(), m = String(now.getMonth() + 1).padStart(2, '0');
+        const y = base.getFullYear(), m = String(base.getMonth() + 1).padStart(2, '0');
         return { dateFrom: `${y}-${m}-01`, dateTo: today };
     }
     if (p === 'yearly') {
-        const y = now.getFullYear();
+        const y = base.getFullYear();
         return { dateFrom: `${y}-01-01`, dateTo: today };
     }
     return { dateFrom: today, dateTo: today };
@@ -105,24 +106,27 @@ exports.getPumpDashboardData = async (req, res) => {
         const pumpId = req.query.pump_id;
         const minimal = req.query.minimal === '1' || req.query.minimal === 'true';
         const period = (req.query.period || 'daily').toLowerCase();
+        const requestedEntryDate = String(req.query.entry_date || '').trim();
+        const hasExplicitDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedEntryDate);
         if (!pumpId) {
             return res.status(400).json({ message: 'pump_id is required' });
         }
 
         const today = getLocalDateStr();
-        const { dateFrom, dateTo } = getDateRangeForPeriod(period, today);
+        const targetDate = hasExplicitDate ? requestedEntryDate : today;
+        const { dateFrom, dateTo } = getDateRangeForPeriod(period, targetDate);
 
-        // Get today's entry first (DATE() so DATETIME column compares correctly)
+        // Get selected date entry first (DATE() so DATETIME column compares correctly)
         let [todayEntry] = await db.execute(
             `SELECT id, entry_date FROM daily_sales_entries WHERE pump_id = ? AND DATE(entry_date) = ? AND Active = 1 LIMIT 1`,
-            [pumpId, today]
+            [pumpId, targetDate]
         );
 
         let todayEntryId = todayEntry && todayEntry[0] ? todayEntry[0].id : null;
-        let entryDateUsed = today;
+        let entryDateUsed = targetDate;
 
-        // Fallback: if no entry for today, use the latest entry for this pump
-        if (!todayEntryId) {
+        // Fallback to latest only when no explicit date was requested.
+        if (!todayEntryId && !hasExplicitDate) {
             const [latestEntry] = await db.execute(
                 `SELECT id, entry_date FROM daily_sales_entries WHERE pump_id = ? AND Active = 1 ORDER BY entry_date DESC LIMIT 1`,
                 [pumpId]
@@ -239,6 +243,7 @@ exports.getPumpDashboardData = async (req, res) => {
             dailyExpensesDetailResult,
             fuelStockResult,
             salesByFuelTypeResult,
+            tankSalesBreakdownResult,
             weeklyTrendResult,
             nozzleReadingsResult,
             staffSalaryResult
@@ -492,6 +497,36 @@ exports.getPumpDashboardData = async (req, res) => {
                 [pumpId, sevenDaysAgoStr, today]
             ),
 
+            // Tank-wise sold liters for selected period
+            db.execute(
+                `SELECT
+                    ft.id AS tank_id,
+                    ft.fuel_type,
+                    ft.tank_number,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN dse.id IS NOT NULL THEN COALESCE(dti.sold_quantity, 0)
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS sold_liters
+                 FROM fuel_tanks ft
+                 LEFT JOIN daily_tank_inventory dti
+                   ON dti.tank_id = ft.id
+                  AND dti.Active = 1
+                 LEFT JOIN daily_sales_entries dse
+                   ON dse.id = dti.daily_entry_id
+                  AND dse.Active = 1
+                  AND DATE(dse.entry_date) BETWEEN ? AND ?
+                 WHERE ft.pump_id = ?
+                   AND ft.Active = 1
+                 GROUP BY ft.id, ft.fuel_type, ft.tank_number
+                 ORDER BY ft.fuel_type, ft.tank_number, ft.id`,
+                [dateFrom, dateTo, pumpId]
+            ),
+
             // Weekly trend (last 7 days) - optimized
             db.execute(
                 `SELECT 
@@ -580,6 +615,16 @@ exports.getPumpDashboardData = async (req, res) => {
             total_sales: parseFloat(row.total_sales) || 0
         }));
 
+        const tankSalesBreakdown = (tankSalesBreakdownResult[0] || []).map(row => {
+            const tankNumber = row.tank_number != null ? row.tank_number : row.tank_id;
+            return {
+                tank_id: row.tank_id,
+                tank_name: `${row.fuel_type || 'Fuel'} Tank ${tankNumber}`,
+                fuel_type: row.fuel_type || 'N/A',
+                sold_liters: Math.round((parseFloat(row.sold_liters) || 0) * 100) / 100
+            };
+        });
+
         const weeklyTrend = (weeklyTrendResult[0] || []).map(row => ({
             date: row.entry_date,
             sales: parseFloat(row.daily_sales) || 0
@@ -631,6 +676,7 @@ exports.getPumpDashboardData = async (req, res) => {
             staffSalary: Math.round(staffSalary * 100) / 100,
             fuelStock,
             salesByFuelType,
+            tankSalesBreakdown,
             weeklyTrend
         });
     } catch (err) {
