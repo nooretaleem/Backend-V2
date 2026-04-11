@@ -3,6 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config/config.json');
 
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL_ENV;
+const globalPoolKey = '__polMysqlPoolPromise';
+const globalPoolLogKey = '__polMysqlPoolLogged';
+
 // Create a pool to handle database connections
 const poolConfig = {
   host: config.host,
@@ -17,6 +21,11 @@ const poolConfig = {
   namedPlaceholders: true,
 };
 
+// Vercel runs many isolated invocations; smaller per-instance pools reduce total DB pressure.
+if (isVercel) {
+  poolConfig.connectionLimit = Math.min(poolConfig.connectionLimit || 10, 4);
+}
+
 // Add SSL configuration if specified (required for Aiven cloud databases)
 if (config.ssl) {
   const sslConfig = {
@@ -26,10 +35,10 @@ if (config.ssl) {
   // If CA certificate path is provided, read and use it
   if (config.sslCa) {
     try {
-      const caPath = path.isAbsolute(config.sslCa) 
-        ? config.sslCa 
+      const caPath = path.isAbsolute(config.sslCa)
+        ? config.sslCa
         : path.join(__dirname, '..', config.sslCa);
-      
+
       if (fs.existsSync(caPath)) {
         sslConfig.ca = fs.readFileSync(caPath);
         sslConfig.rejectUnauthorized = true; // Verify certificate when CA is provided
@@ -45,10 +54,10 @@ if (config.ssl) {
   // If client certificate is provided (optional, usually not needed for Aiven)
   if (config.sslCert) {
     try {
-      const certPath = path.isAbsolute(config.sslCert) 
-        ? config.sslCert 
+      const certPath = path.isAbsolute(config.sslCert)
+        ? config.sslCert
         : path.join(__dirname, '..', config.sslCert);
-      
+
       if (fs.existsSync(certPath)) {
         sslConfig.cert = fs.readFileSync(certPath);
         console.log('✅ SSL Client Certificate loaded from:', certPath);
@@ -63,10 +72,10 @@ if (config.ssl) {
   // If client key is provided (optional, usually not needed for Aiven)
   if (config.sslKey) {
     try {
-      const keyPath = path.isAbsolute(config.sslKey) 
-        ? config.sslKey 
+      const keyPath = path.isAbsolute(config.sslKey)
+        ? config.sslKey
         : path.join(__dirname, '..', config.sslKey);
-      
+
       if (fs.existsSync(keyPath)) {
         sslConfig.key = fs.readFileSync(keyPath);
         console.log('✅ SSL Client Key loaded from:', keyPath);
@@ -80,24 +89,19 @@ if (config.ssl) {
 
   poolConfig.ssl = sslConfig;
 }
+if (!globalThis[globalPoolKey]) {
+  const pool = mysql.createPool(poolConfig);
+  globalThis[globalPoolKey] = pool.promise();
+}
 
-const pool = mysql.createPool(poolConfig);
+if (!globalThis[globalPoolLogKey]) {
+  console.log('✅ Database Pool Initialized');
+  console.log('   Host:', config.host);
+  console.log('   User:', config.user);
+  console.log('   Database:', config.database);
+  console.log('   Connection Limit:', poolConfig.connectionLimit);
+  console.log('   Environment:', isVercel ? 'Vercel' : 'Node Server');
+  globalThis[globalPoolLogKey] = true;
+}
 
-// Test connection and log database info
-pool.getConnection((err, connection) => {
-  if (err) {
-    console.error('❌ Database Connection Error:', err.message);
-    console.error('   Host:', config.host);
-    console.error('   User:', config.user);
-    console.error('   Database:', config.database);
-  } else {
-    console.log('✅ Database Connected Successfully!');
-    console.log('   Host:', config.host);
-    console.log('   User:', config.user);
-    console.log('   Database:', config.database);
-    console.log('   Connection Pool: Ready');
-    connection.release();
-  }
-});
-
-module.exports = pool.promise();
+module.exports = globalThis[globalPoolKey];
