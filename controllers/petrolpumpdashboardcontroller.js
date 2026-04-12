@@ -159,11 +159,21 @@ exports.getPumpDashboardData = async (req, res) => {
                     WHERE daily_entry_id = ? AND Active = 1`,
                     [todayEntryId]
                 ) : Promise.resolve([[{ total: 0 }]]),
-                todayEntryId ? db.execute(
-                    `SELECT COALESCE(SUM(total_amount), 0) as total_amount, COALESCE(SUM(liters_sold), 0) as liters_sold
-                    FROM mobile_oil_cash_sales WHERE daily_entry_id = ? AND Active = 1`,
-                    [todayEntryId]
-                ) : Promise.resolve([[{ total_amount: 0, liters_sold: 0 }]])
+                db.execute(
+                    `SELECT
+                        COALESCE(SUM(mo.total_amount), 0) as total_amount,
+                        COALESCE(SUM(mo.liters_sold), 0) as liters_sold
+                     FROM mobile_oil_cash_sales mo
+                     WHERE mo.Active = 1
+                       AND mo.daily_entry_id IN (
+                            SELECT dse.id
+                            FROM daily_sales_entries dse
+                            WHERE dse.pump_id = ?
+                              AND DATE(dse.entry_date) = ?
+                              AND dse.Active = 1
+                       )`,
+                    [pumpId, targetDate]
+                )
             ]);
             const salesData = salesAndLitersResult[0] && salesAndLitersResult[0][0] ? salesAndLitersResult[0][0] : {};
             const fuelTotal = parseFloat(salesData.total_sales) || 0;
@@ -266,10 +276,16 @@ exports.getPumpDashboardData = async (req, res) => {
 
             // Mobile oil sales over date range
             db.execute(
-                `SELECT COALESCE(SUM(mo.total_amount), 0) as total_amount, COALESCE(SUM(mo.liters_sold), 0) as liters_sold
-                FROM mobile_oil_cash_sales mo
-                INNER JOIN daily_sales_entries dse ON mo.daily_entry_id = dse.id AND dse.Active = 1
-                WHERE dse.pump_id = ? AND DATE(dse.entry_date) BETWEEN ? AND ? AND mo.Active = 1`,
+                `SELECT
+                    COALESCE(SUM(mo.total_amount), 0) as total_amount,
+                    COALESCE(SUM(mo.liters_sold), 0) as liters_sold
+                 FROM mobile_oil_cash_sales mo
+                                 INNER JOIN daily_sales_entries dse
+                                        ON mo.daily_entry_id = dse.id
+                                     AND dse.Active = 1
+                                 WHERE mo.Active = 1
+                                     AND dse.pump_id = ?
+                                     AND DATE(dse.entry_date) BETWEEN ? AND ?`,
                 [pumpId, dateFrom, dateTo]
             ),
 
